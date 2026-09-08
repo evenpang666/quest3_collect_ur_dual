@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Quest 3 双臂遥操作</title>
+<style>
+body{margin:0;background:#10131a;color:#eef3ff;font:17px system-ui,sans-serif}main{max-width:760px;margin:5vh auto;padding:24px}
+button{font-size:1rem;padding:.75rem 1rem;margin:.3rem}.danger{background:#9d2635;color:white}#status{white-space:pre-wrap;line-height:1.55;padding:1rem;background:#1d2430;border-radius:8px}.hint{color:#b8c5dc}
+</style>
+<main>
+  <h1>Quest 3 → UR7e 双臂遥操作</h1>
+  <p class="hint">页面版本：orientation-v2</p>
+  <p class="hint">左手柄→左臂，右手柄→右臂。按住侧握把才移动对应机械臂；扳机独立控制对应夹爪：按住缓慢合拢，松开缓慢张开。右手 B 键切换录制，左右摇杆按下分别重新锚定。</p>
+  <button id="connect">连接</button><button id="enter" disabled>进入 VR</button>
+  <button id="record" class="danger" disabled>开始录制</button>
+  <button id="recenterLeft" disabled>左臂重新锚定</button><button id="recenterRight" disabled>右臂重新锚定</button>
+  <div id="status">等待连接…</div>
+</main>
+<script>
+(()=>{
+const $=id=>document.getElementById(id), status=$('status'), connect=$('connect'), enter=$('enter'), record=$('record');
+let ws,session,space,gl,layer,renderer,lastSent=0,lastImage=0,imagePending=false,recording=false;
+let recenterLeft=false,recenterRight=false,lastB=false;
+const set=t=>status.textContent=t;
+function button(src,i){return src?.gamepad?.buttons?.[i]?.value||0}
+function controller(src,frame){
+  if(!src)return null; const pose=frame.getPose(src.gripSpace||src.targetRaySpace,space); if(!pose)return null;
+  const p=pose.transform.position,q=pose.transform.orientation;
+  return {position:[p.x,p.y,p.z],orientation:[q.x,q.y,q.z,q.w],trigger:button(src,0),squeeze:button(src,1),thumbstick:button(src,3),secondary:button(src,5)};
+}
+function send(value){if(ws?.readyState===WebSocket.OPEN)ws.send(JSON.stringify(value))}
+function setRecording(value){recording=value;record.textContent=value?'停止并保存':'开始录制';send({type:'record',recording:value})}
+function connectWs(){
+  if(ws?.readyState===WebSocket.OPEN)return;
+  ws=new WebSocket(`${location.protocol==='https:'?'wss':'ws'}://${location.host}/ws`);
+  ws.onopen=()=>{connect.disabled=true;enter.disabled=false;record.disabled=false;set('服务器已连接；进入 VR 后先小幅验证左右臂映射。')};
+  ws.onclose=()=>{connect.disabled=false;enter.disabled=true;record.disabled=true;recording=false;set('连接断开：录制已停止，机械臂 watchdog 将停止运动。')};
+  ws.onmessage=e=>{const d=JSON.parse(e.data);if(d.type==='status'){recording=!!d.recording;record.textContent=recording?'停止并保存':'开始录制';set(`VR连接: 是\n录制: ${recording?'进行中':'未录制'}\n同步帧: ${d.synced_frames??'-'}\n丢帧: ${d.dropped_frames??'-'}\n左臂: ${d.left_arm??'等待'} / ${d.left_arm_rtde??'RTDE等待'}\n左夹爪: ${d.left_arm_gripper??'等待'}\n右臂: ${d.right_arm??'等待'} / ${d.right_arm_rtde??'RTDE等待'}\n右夹爪: ${d.right_arm_gripper??'未连接'}\n双臂距离保护: ${d.dual_tcp_guard??'-'}`)}};
+}
+function shader(type,source){const s=gl.createShader(type);gl.shaderSource(s,source);gl.compileShader(s);if(!gl.getShaderParameter(s,gl.COMPILE_STATUS))throw Error(gl.getShaderInfoLog(s));return s}
+function program(v,f){const p=gl.createProgram();gl.attachShader(p,shader(gl.VERTEX_SHADER,v));gl.attachShader(p,shader(gl.FRAGMENT_SHADER,f));gl.linkProgram(p);return p}
+function makeRenderer(){
+ const p=program('attribute vec3 p;attribute vec2 u;uniform mat4 m;varying vec2 v;void main(){v=u;gl_Position=m*vec4(p,1.);}','precision mediump float;uniform sampler2D t;varying vec2 v;void main(){gl_FragColor=texture2D(t,v);}');
+ // Large 4:3 front-camera panel centered in front of the operator. DOM image
+ // sources use a top-left origin, so the screen bottom samples v=1 and the
+ // screen top samples v=0. This avoids browser-specific ImageBitmap flip rules.
+ const verts=new Float32Array([-.8,.65,-1.6,0,1,.8,.65,-1.6,1,1,.8,1.85,-1.6,1,0,-.8,.65,-1.6,0,1,.8,1.85,-1.6,1,0,-.8,1.85,-1.6,0,0]);
+ const b=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,b);gl.bufferData(gl.ARRAY_BUFFER,verts,gl.STATIC_DRAW);
+ const t=gl.createTexture();gl.bindTexture(gl.TEXTURE_2D,t);gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,1,1,0,gl.RGBA,gl.UNSIGNED_BYTE,new Uint8Array([15,25,40,255]));
+ gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
+ gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+ return {p,b,t,a:gl.getAttribLocation(p,'p'),u:gl.getAttribLocation(p,'u'),m:gl.getUniformLocation(p,'m')};
+}
+function mul(a,b){const o=new Float32Array(16);for(let c=0;c<4;c++)for(let r=0;r<4;r++)o[c*4+r]=a[r]*b[c*4]+a[4+r]*b[c*4+1]+a[8+r]*b[c*4+2]+a[12+r]*b[c*4+3];return o}
+async function updateImage(now){if(imagePending||now-lastImage<66)return;imagePending=true;lastImage=now;try{const r=await fetch(`/front.jpg?t=${Math.floor(now)}`,{cache:'no-store'});if(!r.ok)return;const bm=await createImageBitmap(await r.blob());gl.bindTexture(gl.TEXTURE_2D,renderer.t);gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL,false);gl.texImage2D(gl.TEXTURE_2D,0,gl.RGB,gl.RGB,gl.UNSIGNED_BYTE,bm);bm.close()}catch(_){}finally{imagePending=false}}
+function render(frame){const viewer=frame.getViewerPose(space);if(!viewer)return;gl.bindFramebuffer(gl.FRAMEBUFFER,layer.framebuffer);gl.clearColor(.02,.04,.08,1);gl.clear(gl.COLOR_BUFFER_BIT);for(const view of viewer.views){const vp=layer.getViewport(view);gl.viewport(vp.x,vp.y,vp.width,vp.height);gl.useProgram(renderer.p);gl.bindTexture(gl.TEXTURE_2D,renderer.t);gl.bindBuffer(gl.ARRAY_BUFFER,renderer.b);gl.enableVertexAttribArray(renderer.a);gl.vertexAttribPointer(renderer.a,3,gl.FLOAT,false,20,0);gl.enableVertexAttribArray(renderer.u);gl.vertexAttribPointer(renderer.u,2,gl.FLOAT,false,20,12);gl.uniformMatrix4fv(renderer.m,false,mul(view.projectionMatrix,view.transform.inverse.matrix));gl.drawArrays(gl.TRIANGLES,0,6)}}
+function onFrame(now,frame){
+ session.requestAnimationFrame(onFrame);updateImage(now);render(frame);
+ const sources=[...session.inputSources],l=controller(sources.find(s=>s.handedness==='left'),frame),r=controller(sources.find(s=>s.handedness==='right'),frame);
+ if(l?.thumbstick>.5)recenterLeft=true;if(r?.thumbstick>.5)recenterRight=true;
+ const b=!!(r?.secondary>.5);if(b&&!lastB)setRecording(!recording);lastB=b;
+ if(now-lastSent>=1000/90){send({type:'pose',left:l,right:r,recenter_left:recenterLeft,recenter_right:recenterRight,xr_time_ms:now});recenterLeft=false;recenterRight=false;lastSent=now}
+}
+async function startVr(){
+ if(!navigator.xr){set('当前浏览器没有 WebXR；请在 Quest Browser 中通过 localhost/HTTPS 打开。');return}
+ try{session=await navigator.xr.requestSession('immersive-vr',{requiredFeatures:['local-floor']});const canvas=document.createElement('canvas');gl=canvas.getContext('webgl',{xrCompatible:true});await gl.makeXRCompatible();layer=new XRWebGLLayer(session,gl);session.updateRenderState({baseLayer:layer});space=await session.requestReferenceSpace('local-floor');renderer=makeRenderer();session.addEventListener('end',()=>{send({type:'pose',left:null,right:null});setRecording(false);session=null});session.requestAnimationFrame(onFrame)}catch(e){set(`无法进入 VR: ${e.message}`)}
+}
+connect.onclick=connectWs;enter.onclick=startVr;record.onclick=()=>setRecording(!recording);
+$('recenterLeft').onclick=()=>recenterLeft=true;$('recenterRight').onclick=()=>recenterRight=true;
+enter.addEventListener('click',()=>{$('recenterLeft').disabled=false;$('recenterRight').disabled=false});
+set(location.hostname==='localhost'||location.protocol==='https:'?'点击“连接”。':'WebXR 需要 HTTPS，或使用 adb reverse 后访问 localhost。');
+})();
+</script>
+</html>

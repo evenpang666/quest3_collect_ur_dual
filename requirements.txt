@@ -1,0 +1,5 @@
+# Non-ROS Python dependencies. Prefer Ubuntu/ROS packages for numpy, OpenCV,
+# h5py and PyYAML when using ROS 2 system Python.
+aiohttp
+ur_rtde
+pyrealsense2

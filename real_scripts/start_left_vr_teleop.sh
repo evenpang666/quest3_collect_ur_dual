@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+# Start the calibrated, slow, position-only left-arm Quest 3 teleoperation.
+# Some ROS Humble setup scripts reference optional environment variables before
+# defining them, so enable nounset only after sourcing ROS below.
+set -Eeo pipefail
+
+PROJECT_DIR="/home/mypc/Documents/pyw/projects/quest3_collect"
+HARDWARE_CONFIG="$PROJECT_DIR/config/hardware_left_teleop.yaml"
+RECORDER_CONFIG="$PROJECT_DIR/config/single_arm_debug.yaml"
+OUTPUT_DIR="$PROJECT_DIR/data/left_vr_episodes"
+CONFIRMATION="MOVE_LEFT_ARM"
+
+if [[ "${1:-}" != "--confirm" || "${2:-}" != "$CONFIRMATION" ]]; then
+  cat <<EOF
+This starts REAL left-UR motion via RTDE (slow, position-only commissioning mode).
+Before continuing: clear the workspace, keep the E-stop reachable, set the UR to
+Remote Control / running, and verify the pendant's active TCP is the calibrated
+closed Robotiq fingertip TCP.
+
+Run exactly:
+  $0 --confirm $CONFIRMATION
+EOF
+  exit 2
+fi
+
+if [[ -n "${CONDA_PREFIX:-}" ]]; then
+  echo "ERROR: leave Conda first (conda deactivate), then rerun this script." >&2
+  exit 2
+fi
+
+source /opt/ros/humble/setup.bash
+source "$HOME/ros2_ws/install/setup.bash"
+set -u
+
+mkdir -p "$OUTPUT_DIR"
+ros2 run quest3_robot_data preflight --config "$HARDWARE_CONFIG"
+adb reverse tcp:8765 tcp:8765
+
+cleanup() {
+  trap - INT TERM EXIT
+  for task_pid in "${LAUNCH_PID:-}" "${CAMERA_PID:-}"; do
+    [[ -n "$task_pid" ]] && kill -INT "$task_pid" 2>/dev/null || true
+  done
+  for task_pid in "${LAUNCH_PID:-}" "${CAMERA_PID:-}"; do
+    [[ -n "$task_pid" ]] && wait "$task_pid" 2>/dev/null || true
+  done
+}
+trap cleanup INT TERM EXIT
+
+echo "Starting left wrist and front RealSense cameras..."
+ros2 launch quest3_robot_data realsense_four.launch.py \
+  hardware_config:="$HARDWARE_CONFIG" &
+CAMERA_PID=$!
+
+echo "Waiting 4 seconds for RealSense initialization..."
+# Do not use `ros2 topic echo --once` as a launch gate here.  On this Humble
+# installation it can wait indefinitely despite the D455 already publishing
+# best-effort images, leaving the WebXR server unable to start.  The bridge
+# itself subscribes with sensor-data QoS and continually retries `/front.jpg`.
+sleep 4
+
+echo "Quest: open http://localhost:8765 in Quest Browser, click connect, then enter VR."
+echo "Teleop: LEFT controller only. Hold the side-grip clutch before moving."
+echo "Gripper: left trigger held = slow close; released = slow open (independent of clutch)."
+echo "Recording: use the VR page record button. Ctrl-C stops robot motion and all nodes."
+
+ros2 launch quest3_robot_data quest3_system.launch.py \
+  hardware_config:="$HARDWARE_CONFIG" \
+  recorder_config:="$RECORDER_CONFIG" \
+  output_dir:="$OUTPUT_DIR" \
+  front_topic:=/front_camera/camera/color/image_raw &
+LAUNCH_PID=$!
+wait "$LAUNCH_PID"

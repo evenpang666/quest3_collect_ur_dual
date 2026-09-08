@@ -1,0 +1,69 @@
+# Dual UR7e + two wrist D435i + front D455 configuration.
+# Each arm has its own base-to-front calibration, while front D455 is fixed.
+mode: dual
+front_camera_topic: /front_camera/camera/color/image_raw
+controller_topic: /quest3/controllers
+control_hz: 125.0
+controller_timeout_sec: 0.25
+min_tcp_separation_m: 0.20
+
+cameras:
+  left_wrist: {model: D435i, serial: "420222071502"}
+  right_wrist: {model: D435i, serial: "405622072940"}
+  front: {model: D455, serial: "260922305390"}
+
+arms:
+  left_arm:
+    role: left
+    robot_ip: 192.168.124.58
+    base_frame: left_base
+    tcp_frame: left_tcp
+    front_calibration: calibration/left_base_to_front_camera.yaml
+    tcp_source: robot_active_tcp
+    tcp_state_topic: /left_arm/tcp_pose
+    joint_topic: /left_arm/joint_states
+    target_topic: /left_arm/target_tcp_pose
+    enabled_topic: /left_arm/teleop_enabled
+    gripper_command_topic: /left_arm/gripper_command
+    commanded_action_topic: /left_arm/commanded_joint_delta
+    position_gain: 1.0
+    rotation_gain: 1.0
+    enable_rotation: true
+    gripper_close_threshold: 0.15
+    workspace_min: [-0.75, -0.75, 0.08]
+    workspace_max: [0.75, 0.75, 0.80]
+  right_arm:
+    role: right
+    robot_ip: 192.168.124.60
+    base_frame: right_base
+    tcp_frame: right_tcp
+    front_calibration: calibration/right_base_to_front_camera.yaml
+    tcp_source: robot_active_tcp
+    tcp_state_topic: /right_arm/tcp_pose
+    joint_topic: /right_arm/joint_states
+    target_topic: /right_arm/target_tcp_pose
+    enabled_topic: /right_arm/teleop_enabled
+    gripper_command_topic: /right_arm/gripper_command
+    commanded_action_topic: /right_arm/commanded_joint_delta
+    position_gain: 1.0
+    rotation_gain: 1.0
+    enable_rotation: true
+    gripper_close_threshold: 0.15
+    # Right-base X is negative at the current table workspace.  These bounds
+    # include the verified current TCP x=-0.851 m while retaining table limits.
+    workspace_min: [-1.20, -0.75, 0.08]
+    workspace_max: [0.20, 0.75, 0.80]
+
+# Same responsive limits apply to both arms.
+rtde:
+  enable_motion: true
+  speed: 0.25
+  acceleration: 0.70
+  lookahead_time: 0.10
+  gain: 400
+  max_target_jump_m: 0.0020
+  max_target_jump_rad: 0.012
+  target_timeout_sec: 0.25
+  gripper_port: 63352
+  gripper_speed: 20
+  gripper_force: 25

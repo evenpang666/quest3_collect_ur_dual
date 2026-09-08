@@ -1,0 +1,27 @@
+# By default this records one UR7e, the left wrist D435i, and front/side D455s.
+mode: single
+record_topic: /quest3/recording
+max_skew_sec: 0.050
+max_joint_interp_gap_sec: 0.100
+source_buffer_size: 30
+writer_queue_size: 30
+rgb_storage: raw_lzf
+jpeg_quality: 90
+
+cameras:
+  left_wrist:
+    rgb_topic: /left_wrist_camera/camera/color/image_raw
+  front:
+    rgb_topic: /front_camera/camera/color/image_raw
+    depth_topic: /front_camera/camera/aligned_depth_to_color/image_raw
+  side:
+    rgb_topic: /side_camera/camera/color/image_raw
+    depth_topic: /side_camera/camera/aligned_depth_to_color/image_raw
+
+arms:
+  left_arm:
+    joint_topic: /left_arm/joint_states
+    commanded_action_topic: /left_arm/commanded_joint_delta
+    gripper_position_topic: /left_arm/gripper_position
+    gripper_command_topic: /left_arm/gripper_command
+    joint_order: [shoulder_pan_joint, shoulder_lift_joint, elbow_joint, wrist_1_joint, wrist_2_joint, wrist_3_joint]

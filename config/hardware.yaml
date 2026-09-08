@@ -1,0 +1,69 @@
+# All values marked CHANGE_ME / calibrated:false must be configured before motion.
+mode: dual
+front_camera_topic: /front_camera/camera/color/image_raw
+controller_topic: /quest3/controllers
+control_hz: 125.0
+controller_timeout_sec: 0.25
+min_tcp_separation_m: 0.20
+
+cameras:
+  left_wrist: {model: D435i, serial: CHANGE_ME_LEFT_WRIST_SERIAL}
+  right_wrist: {model: D435i, serial: CHANGE_ME_RIGHT_WRIST_SERIAL}
+  front: {model: D455, serial: CHANGE_ME_FRONT_SERIAL}
+  side: {model: D455, serial: CHANGE_ME_SIDE_SERIAL}
+
+arms:
+  left_arm:
+    role: left
+    robot_ip: CHANGE_ME_LEFT_ROBOT_IP
+    base_frame: left_base
+    tcp_frame: left_tcp
+    front_calibration: calibration/left_base_to_front_camera.yaml
+    side_calibration: calibration/left_base_to_side_camera.yaml
+    tcp_calibration: calibration/left_tcp.yaml
+    tcp_state_topic: /left_arm/tcp_pose
+    joint_topic: /left_arm/joint_states
+    target_topic: /left_arm/target_tcp_pose
+    enabled_topic: /left_arm/teleop_enabled
+    gripper_command_topic: /left_arm/gripper_command
+    commanded_action_topic: /left_arm/commanded_joint_delta
+    position_gain: 1.0
+    rotation_gain: 1.0
+    enable_rotation: true
+    workspace_min: [-0.80, -0.80, 0.02]
+    workspace_max: [0.80, 0.80, 1.20]
+  right_arm:
+    role: right
+    robot_ip: CHANGE_ME_RIGHT_ROBOT_IP
+    base_frame: right_base
+    tcp_frame: right_tcp
+    front_calibration: calibration/right_base_to_front_camera.yaml
+    side_calibration: calibration/right_base_to_side_camera.yaml
+    tcp_calibration: calibration/right_tcp.yaml
+    tcp_state_topic: /right_arm/tcp_pose
+    joint_topic: /right_arm/joint_states
+    target_topic: /right_arm/target_tcp_pose
+    enabled_topic: /right_arm/teleop_enabled
+    gripper_command_topic: /right_arm/gripper_command
+    commanded_action_topic: /right_arm/commanded_joint_delta
+    position_gain: 1.0
+    rotation_gain: 1.0
+    enable_rotation: true
+    workspace_min: [-0.80, -0.80, 0.02]
+    workspace_max: [0.80, 0.80, 1.20]
+
+rtde:
+  # Safety gate: leave false during calibration/topic/handedness checks. Motion
+  # commands and gripper commands are ignored until explicitly changed to true.
+  enable_motion: false
+  speed: 0.10
+  acceleration: 0.25
+  lookahead_time: 0.10
+  gain: 300
+  # Per 8 ms control tick: approximately 0.125 m/s and 1 rad/s upper bounds.
+  max_target_jump_m: 0.001
+  max_target_jump_rad: 0.008
+  target_timeout_sec: 0.25
+  gripper_port: 63352
+  gripper_speed: 128
+  gripper_force: 100

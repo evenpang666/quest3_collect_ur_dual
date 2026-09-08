@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>quest3_robot_data</name>
+  <version>0.1.0</version>
+  <description>ROS 2 synchronized dataset recorder for Quest 3 teleoperated UR robots.</description>
+  <maintainer email="maintainer@example.com">maintainer</maintainer>
+  <license>Apache-2.0</license>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>cv_bridge</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
+  <exec_depend>python3-h5py</exec_depend>
+  <exec_depend>python3-opencv</exec_depend>
+  <exec_depend>python3-aiohttp</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>realsense2_camera</exec_depend>
+  <export><build_type>ament_python</build_type></export>
+</package>
