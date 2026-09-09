@@ -30,8 +30,7 @@ arms:
     rotation_gain: 1.0
     enable_rotation: true
     gripper_close_threshold: 0.15
-    workspace_min: [-0.75, -0.75, 0.08]
-    workspace_max: [0.75, 0.75, 0.80]
+    # No software Cartesian workspace limit; use UR controller safety limits.
   right_arm:
     role: right
     robot_ip: 192.168.124.60
@@ -49,10 +48,7 @@ arms:
     rotation_gain: 1.0
     enable_rotation: true
     gripper_close_threshold: 0.15
-    # Right-base X is negative at the current table workspace.  These bounds
-    # include the verified current TCP x=-0.851 m while retaining table limits.
-    workspace_min: [-1.20, -0.75, 0.08]
-    workspace_max: [0.20, 0.75, 0.80]
+    # No software Cartesian workspace limit; use UR controller safety limits.
 
 # Same responsive limits apply to both arms.
 rtde:
@@ -64,6 +60,8 @@ rtde:
   max_target_jump_m: 0.0020
   max_target_jump_rad: 0.012
   target_timeout_sec: 0.25
+  # Retry RTDE after a robot-side control script loss (E-stop/protective stop).
+  rtde_reconnect_interval_sec: 1.0
   gripper_port: 63352
   gripper_speed: 20
   gripper_force: 25

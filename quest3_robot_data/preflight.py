@@ -80,10 +80,12 @@ def main() -> None:
                         pass
                 except OSError as exc:
                     failures.append(f"{name}: {service} port {port} unreachable: {exc}")
-            # The first clutch press anchors a target at the current TCP.  A
-            # bad virtual workspace should fail here rather than silently
-            # leaving an arm in `workspace stop` during teleoperation.
-            if motion_enabled:
+            # A virtual Cartesian workspace is optional.  When configured,
+            # verify the initial TCP so the first clutch anchor is usable.
+            has_workspace = "workspace_min" in arm or "workspace_max" in arm
+            if has_workspace and ("workspace_min" not in arm or "workspace_max" not in arm):
+                failures.append(f"{name}: workspace_min and workspace_max must be set together")
+            elif motion_enabled and has_workspace:
                 try:
                     from rtde_receive import RTDEReceiveInterface
 
@@ -113,7 +115,16 @@ def main() -> None:
         except Exception as exc:
             failures.append(f"cannot enumerate Realsense devices: {exc}")
         try:
-            adb = subprocess.run(["adb", "devices"], check=True, text=True, capture_output=True, timeout=3).stdout
+            # The first invocation may need to launch the local ADB daemon;
+            # Quest USB enumeration commonly exceeds three seconds then.  Do
+            # it explicitly and allow a bounded startup window before reading
+            # the authorized-device list.
+            subprocess.run(
+                ["adb", "start-server"], check=True, text=True, capture_output=True, timeout=12
+            )
+            adb = subprocess.run(
+                ["adb", "devices"], check=True, text=True, capture_output=True, timeout=8
+            ).stdout
             if "\tdevice" not in adb:
                 failures.append("Quest is not authorized in `adb devices`")
         except Exception as exc:

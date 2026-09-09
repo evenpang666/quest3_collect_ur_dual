@@ -255,8 +255,9 @@ ros2 run quest3_robot_data calibrate_camera_charuco \
 左右手柄分别控制左右 UR，速度/增益/力度与当前左臂完全一致：`1:1` 相对位姿、`0.25 m/s`、约 `1.5 rad/s`、夹爪速度 `20/255`、力度 `25/255`。双臂目标在 front 相机坐标中小于 `0.20 m` 时会同时停止；分别松开并重新按住侧握把后才会恢复。
 
 启动前预检会读取两臂当前 TCP，确认其位于各自的虚拟工作空间内；若显示
-`current TCP ... is outside workspace`，不得强行启动，应先按实际桌面范围更新对应
-`workspace_min/workspace_max`。
+当前 `hardware_left_teleop.yaml` 与 `hardware_dual_teleop.yaml` 不设置软件 Cartesian
+工作空间；运动范围由 UR 控制柜的安全平面、关节限制、速度限制及急停负责。若自定义配置
+设置 `workspace_min/workspace_max`，两项必须同时设置，预检仍会检查当前 TCP 是否在范围内。
 
 ## 11. 将一个 episode 导出为四个相机视频
 

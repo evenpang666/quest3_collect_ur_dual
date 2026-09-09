@@ -1,4 +1,4 @@
-"""Quest Browser WebXR/WebSocket bridge with front-camera video feedback."""
+"""Quest Browser WebXR/WebSocket bridge with front and wrist-camera feedback."""
 from __future__ import annotations
 
 import argparse
@@ -21,33 +21,58 @@ from std_msgs.msg import Bool, String
 
 
 class QuestWebNode(Node):
-    def __init__(self, front_topic: str, jpeg_quality: int, stream_fps: float):
+    def __init__(
+        self,
+        front_topic: str,
+        left_wrist_topic: str,
+        right_wrist_topic: str,
+        jpeg_quality: int,
+        stream_fps: float,
+        wrist_stream_fps: float,
+    ):
         super().__init__("quest3_webxr_bridge")
         self.controller_pub = self.create_publisher(String, "/quest3/controllers", 10)
         self.record_pub = self.create_publisher(Bool, "/quest3/recording", 10)
         self.status_sub = self.create_subscription(String, "/quest3/system_status", self._status, 10)
-        self.image_sub = self.create_subscription(Image, front_topic, self._image, qos_profile_sensor_data)
         self.bridge = CvBridge()
         self.jpeg_quality = int(jpeg_quality)
-        self.min_image_period = 1.0 / stream_fps
-        self.last_image_time = 0.0
+        self.min_image_period = {
+            "front": 1.0 / stream_fps,
+            "left_wrist": 1.0 / wrist_stream_fps,
+            "right_wrist": 1.0 / wrist_stream_fps,
+        }
+        self.last_image_time = {camera: 0.0 for camera in self.min_image_period}
         self._lock = threading.Lock()
-        self.latest_jpeg: bytes | None = None
+        self.latest_jpegs: dict[str, bytes | None] = {camera: None for camera in self.min_image_period}
         self.status: dict[str, Any] = {"recording": False}
+        topics = {
+            "front": front_topic,
+            "left_wrist": left_wrist_topic,
+            "right_wrist": right_wrist_topic,
+        }
+        self.image_subscriptions = [
+            self.create_subscription(
+                Image,
+                topic,
+                lambda message, camera=camera: self._image(camera, message),
+                qos_profile_sensor_data,
+            )
+            for camera, topic in topics.items()
+        ]
 
-    def _image(self, message: Image) -> None:
+    def _image(self, camera: str, message: Image) -> None:
         now = time.monotonic()
-        if now - self.last_image_time < self.min_image_period:
+        if now - self.last_image_time[camera] < self.min_image_period[camera]:
             return
-        self.last_image_time = now
+        self.last_image_time[camera] = now
         try:
             bgr = self.bridge.imgmsg_to_cv2(message, desired_encoding="bgr8")
             ok, encoded = cv2.imencode(".jpg", bgr, [cv2.IMWRITE_JPEG_QUALITY, self.jpeg_quality])
             if ok:
                 with self._lock:
-                    self.latest_jpeg = encoded.tobytes()
+                    self.latest_jpegs[camera] = encoded.tobytes()
         except Exception as exc:
-            self.get_logger().warning(f"front image conversion failed: {exc}")
+            self.get_logger().warning(f"{camera} image conversion failed: {exc}")
 
     def _status(self, message: String) -> None:
         try:
@@ -71,19 +96,20 @@ class QuestWebNode(Node):
         with self._lock:
             self.status["recording"] = bool(enabled)
 
-    def snapshot(self) -> tuple[bytes | None, dict[str, Any]]:
+    def snapshot(self, camera: str | None = None) -> tuple[bytes | None, dict[str, Any]]:
         with self._lock:
-            return self.latest_jpeg, dict(self.status)
+            return self.latest_jpegs.get(camera) if camera else None, dict(self.status)
 
 
 async def index(request: web.Request) -> web.FileResponse:
     return web.FileResponse(Path(__file__).with_name("web") / "index.html", headers={"Cache-Control": "no-store"})
 
 
-async def front_image(request: web.Request) -> web.Response:
-    image, _ = request.app["node"].snapshot()
+async def camera_image(request: web.Request) -> web.Response:
+    camera = request.match_info["camera"]
+    image, _ = request.app["node"].snapshot(camera)
     if image is None:
-        return web.Response(status=503, text="front camera is not ready")
+        return web.Response(status=503, text=f"{camera} camera is not ready")
     return web.Response(body=image, content_type="image/jpeg", headers={"Cache-Control": "no-store"})
 
 
@@ -123,24 +149,34 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--front-topic", default="/front_camera/color/image_raw")
+    parser.add_argument("--left-wrist-topic", default="/left_wrist_camera/camera/color/image_raw")
+    parser.add_argument("--right-wrist-topic", default="/right_wrist_camera/camera/color/image_raw")
     parser.add_argument("--stream-fps", type=float, default=15.0)
+    parser.add_argument("--wrist-stream-fps", type=float, default=10.0)
     parser.add_argument("--jpeg-quality", type=int, default=75)
     parser.add_argument("--cert")
     parser.add_argument("--key")
     args = parser.parse_args(plain_args[1:])
-    if args.stream_fps <= 0 or not 1 <= args.jpeg_quality <= 95:
-        raise SystemExit("stream FPS must be positive and JPEG quality must be in [1,95]")
+    if args.stream_fps <= 0 or args.wrist_stream_fps <= 0 or not 1 <= args.jpeg_quality <= 95:
+        raise SystemExit("stream FPS values must be positive and JPEG quality must be in [1,95]")
     if bool(args.cert) != bool(args.key):
         raise SystemExit("--cert and --key must be supplied together")
 
     rclpy.init(args=argv)
-    node = QuestWebNode(args.front_topic, args.jpeg_quality, args.stream_fps)
+    node = QuestWebNode(
+        args.front_topic,
+        args.left_wrist_topic,
+        args.right_wrist_topic,
+        args.jpeg_quality,
+        args.stream_fps,
+        args.wrist_stream_fps,
+    )
     ros_thread = threading.Thread(target=rclpy.spin, args=(node,), daemon=True)
     ros_thread.start()
     app = web.Application()
     app["node"], app["clients"] = node, set()
     app.router.add_get("/", index)
-    app.router.add_get("/front.jpg", front_image)
+    app.router.add_get("/{camera:front|left_wrist|right_wrist}.jpg", camera_image)
     app.router.add_get("/ws", websocket)
     ssl_context = None
     if args.cert:

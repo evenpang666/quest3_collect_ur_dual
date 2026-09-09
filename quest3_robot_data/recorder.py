@@ -22,6 +22,7 @@ from typing import Any
 import h5py
 import numpy as np
 import yaml
+import cv2
 
 import rclpy
 from cv_bridge import CvBridge
@@ -113,6 +114,10 @@ class EpisodeWriter(threading.Thread):
                     file.attrs["action_definition"] = "commanded target_q - actual_q (radians)"
                     file.attrs["executed_action_definition"] = "qpos[t+1] - qpos[t] (radians)"
                     file.attrs["final_action"] = "action_valid=false; executed_action=zeros"
+                    file.attrs["sample_alignment"] = (
+                        "Every leading dataset index i contains images, interpolated robot state, "
+                        "and commanded action from one synchronized Sample."
+                    )
                     final_path, pending, count = event.path, None, 0
                     print(f"[writer] RECORDING {event.path}", flush=True)
                     continue
@@ -152,6 +157,7 @@ class EpisodeWriter(threading.Thread):
                 file, pending, np.zeros_like(pending.qpos), action_valid=False, terminal=True
             )
             count += 1
+        self._assert_sample_alignment(file, count)
         file.attrs["num_samples"] = count
         file.attrs["complete"] = True
         inprogress_path = Path(file.filename)
@@ -165,6 +171,23 @@ class EpisodeWriter(threading.Thread):
             # is safe; it was created solely by this writer.
             inprogress_path.unlink(missing_ok=True)
             print("[writer] empty episode discarded", flush=True)
+
+    @staticmethod
+    def _assert_sample_alignment(file: h5py.File, expected_count: int) -> None:
+        """Refuse to mark complete an episode with mismatched sample indices."""
+        mismatched: list[str] = []
+
+        def visit(name: str, value: Any) -> None:
+            if isinstance(value, h5py.Dataset) and (not value.shape or value.shape[0] != expected_count):
+                actual = "scalar" if not value.shape else str(value.shape[0])
+                mismatched.append(f"{name}={actual}")
+
+        file.visititems(visit)
+        if mismatched:
+            raise RuntimeError(
+                f"refusing incomplete/misaligned episode: expected {expected_count} samples; "
+                + ", ".join(mismatched)
+            )
 
     @staticmethod
     def _resize_write(dataset: h5py.Dataset, value: np.ndarray | int) -> None:
@@ -260,6 +283,168 @@ class EpisodeWriter(threading.Thread):
                 dataset.attrs["unit"] = "" if stream == "rgb" else "driver-defined (usually mm for 16UC1)"
 
 
+class FolderEpisodeWriter(EpisodeWriter):
+    """Lossless, uncompressed episode writer for low-latency acquisition.
+
+    Each image is a standalone ``.npy`` file.  This avoids HDF5/LZF packing
+    in the active recording path; a later offline tool may package the folder
+    into HDF5 without affecting teleoperation.
+    """
+
+    @staticmethod
+    def _image_directory(camera: str, stream: str) -> str:
+        if camera == "front":
+            return f"{'rgb' if stream == 'rgb' else 'depth'}_front_cam"
+        if camera == "side":
+            return f"{'rgb' if stream == 'rgb' else 'depth'}_side_cam"
+        if camera == "left_wrist" and stream == "rgb":
+            return "rgb_wrist_left_cam"
+        if camera == "right_wrist" and stream == "rgb":
+            return "rgb_wrist_right_cam"
+        return f"{stream}_{camera}_cam"
+
+    @staticmethod
+    def _state_record(
+        index: int, sample: Sample, executed_action: np.ndarray, action_valid: bool, terminal: bool
+    ) -> dict[str, Any]:
+        return {
+            "index": index,
+            "timestamp_ns": int(sample.timestamp_ns),
+            "source_timestamps_ns": {key: int(value) for key, value in sample.source_timestamps_ns.items()},
+            "qpos": sample.qpos.astype(float).tolist(),
+            "qvel": sample.qvel.astype(float).tolist(),
+            "commanded_action": sample.commanded_action.astype(float).tolist(),
+            "executed_action": executed_action.astype(float).tolist(),
+            "gripper_position": sample.gripper_position.astype(float).tolist(),
+            "gripper_command": sample.gripper_command.astype(float).tolist(),
+            "action_valid": bool(action_valid),
+            "is_terminal": bool(terminal),
+        }
+
+    def _write_frame(
+        self,
+        directory: Path,
+        state_file: Any,
+        sample: Sample,
+        executed_action: np.ndarray,
+        action_valid: bool,
+        terminal: bool,
+        index: int,
+        image_dirs: set[str],
+    ) -> None:
+        for camera, streams in sample.images.items():
+            for stream, image in streams.items():
+                image_dir = self._image_directory(camera, stream)
+                image_dirs.add(image_dir)
+                target = directory / image_dir
+                target.mkdir(exist_ok=True)
+                if stream == "rgb":
+                    # RGB remains directly inspectable in ordinary image tools.
+                    # OpenCV writes BGR while the recorder stores RGB arrays.
+                    ok = cv2.imwrite(
+                        str(target / f"{index:06d}.jpg"),
+                        np.ascontiguousarray(image[..., ::-1]),
+                        [cv2.IMWRITE_JPEG_QUALITY, self.jpeg_quality],
+                    )
+                    if not ok:
+                        raise RuntimeError(f"failed to write RGB JPEG: {camera}/{index:06d}")
+                else:
+                    # Depth remains a lossless uint16 NPY array.
+                    np.save(target / f"{index:06d}.npy", image, allow_pickle=False)
+        state_file.write(json.dumps(self._state_record(index, sample, executed_action, action_valid, terminal)) + "\n")
+
+    def _close_folder_episode(
+        self,
+        directory: Path,
+        final_path: Path,
+        state_file: Any,
+        metadata: dict[str, Any],
+        count: int,
+        image_dirs: set[str],
+    ) -> None:
+        state_file.flush()
+        state_file.close()
+        for image_dir in image_dirs:
+            actual = len(list((directory / image_dir).glob("*.npy"))) + len(list((directory / image_dir).glob("*.jpg")))
+            if actual != count:
+                raise RuntimeError(f"folder episode misalignment: {image_dir} has {actual}, expected {count}")
+        manifest = dict(metadata)
+        manifest.update({
+            "complete": True,
+            "num_samples": count,
+            "storage_backend": "folder_npy",
+            "image_format": f"RGB JPEG quality {self.jpeg_quality}; depth NPY (lossless uint16)",
+            "state_format": "robot_state.jsonl; line i matches every image file i",
+        })
+        (directory / "manifest.yaml").write_text(yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8")
+        if count:
+            os.replace(directory, final_path)
+            print(f"[folder-writer] SAVED {final_path} ({count} samples)", flush=True)
+        else:
+            for child in directory.iterdir():
+                child.unlink()
+            directory.rmdir()
+            print("[folder-writer] empty episode discarded", flush=True)
+
+    def run(self) -> None:
+        directory: Path | None = None
+        final_path: Path | None = None
+        state_file: Any = None
+        metadata: dict[str, Any] = {}
+        pending: Sample | None = None
+        count = 0
+        image_dirs: set[str] = set()
+        try:
+            while True:
+                event = self.events.get()
+                if event is self.SHUTDOWN:
+                    if directory is not None and final_path is not None and state_file is not None:
+                        if pending is not None:
+                            self._write_frame(directory, state_file, pending, np.zeros_like(pending.qpos), False, True, count, image_dirs)
+                            count += 1
+                        self._close_folder_episode(directory, final_path, state_file, metadata, count, image_dirs)
+                    return
+                if isinstance(event, StartEpisode):
+                    if directory is not None:
+                        raise RuntimeError("overlapping folder episodes are not supported")
+                    final_path = event.path
+                    directory = event.path.with_name(event.path.name + ".inprogress")
+                    directory.mkdir(parents=True, exist_ok=False)
+                    metadata = dict(event.metadata)
+                    metadata.update({"complete": False, "storage_backend": "folder_npy"})
+                    (directory / "manifest.yaml").write_text(yaml.safe_dump(metadata, sort_keys=False), encoding="utf-8")
+                    state_file = (directory / "robot_state.jsonl").open("w", encoding="utf-8")
+                    pending, count, image_dirs = None, 0, set()
+                    print(f"[folder-writer] RECORDING {final_path}", flush=True)
+                    continue
+                if event is self.STOP:
+                    if directory is not None and final_path is not None and state_file is not None:
+                        if pending is not None:
+                            self._write_frame(directory, state_file, pending, np.zeros_like(pending.qpos), False, True, count, image_dirs)
+                            count += 1
+                        self._close_folder_episode(directory, final_path, state_file, metadata, count, image_dirs)
+                    directory = final_path = state_file = None
+                    pending, count, image_dirs = None, 0, set()
+                    continue
+                if not isinstance(event, Sample) or directory is None or state_file is None:
+                    continue
+                if pending is None:
+                    pending = event
+                else:
+                    self._write_frame(directory, state_file, pending, event.qpos - pending.qpos, True, False, count, image_dirs)
+                    count += 1
+                    pending = event
+        except Exception as exc:
+            self._error = exc
+            if state_file is not None:
+                try:
+                    state_file.flush()
+                    state_file.close()
+                except Exception:
+                    pass
+            print(f"[folder-writer] ERROR: {exc!r}; retained incomplete folder", file=sys.stderr, flush=True)
+
+
 class DatasetRecorder(Node):
     """Camera-clocked nearest-frame aggregator with interpolated robot state."""
 
@@ -268,12 +453,15 @@ class DatasetRecorder(Node):
         self.config = self._validate_config(config)
         self.output_dir = output_dir.expanduser().resolve()
         self.bridge = CvBridge()
-        self.writer = EpisodeWriter(
+        writer_type = FolderEpisodeWriter if self.config["storage_backend"] == "folder_npy" else EpisodeWriter
+        writer_quality = self.config["folder_rgb_jpeg_quality"] if self.config["storage_backend"] == "folder_npy" else self.config["jpeg_quality"]
+        self.writer = writer_type(
             int(self.config["writer_queue_size"]),
             self.config["rgb_storage"],
-            int(self.config["jpeg_quality"]),
+            int(writer_quality),
         )
         self.recording = False
+        self.recording_started_ns: int | None = None
         self.synced_frames = 0
         self.enqueued_frames = 0
         self.dropped_frames = 0
@@ -358,6 +546,14 @@ class DatasetRecorder(Node):
         for name, camera in config["cameras"].items():
             if "rgb_topic" not in camera:
                 raise ValueError(f"camera {name} missing rgb_topic")
+            if "record_size" in camera:
+                size = camera["record_size"]
+                if (
+                    not isinstance(size, (list, tuple))
+                    or len(size) != 2
+                    or any(not isinstance(value, int) or value <= 0 for value in size)
+                ):
+                    raise ValueError(f"camera {name} record_size must be [width, height] of positive integers")
         for name, arm in config["arms"].items():
             if not arm.get("joint_topic") or not arm.get("joint_order"):
                 raise ValueError(f"arm {name} requires joint_topic and non-empty joint_order")
@@ -371,10 +567,16 @@ class DatasetRecorder(Node):
         config.setdefault("writer_queue_size", 30)
         config.setdefault("rgb_storage", "raw_lzf")
         config.setdefault("jpeg_quality", 90)
+        config.setdefault("folder_rgb_jpeg_quality", config["jpeg_quality"])
+        config.setdefault("storage_backend", "hdf5")
         if config["rgb_storage"] not in {"raw_lzf", "jpeg"}:
             raise ValueError("rgb_storage must be raw_lzf or jpeg")
         if not 1 <= int(config["jpeg_quality"]) <= 100:
             raise ValueError("jpeg_quality must be in [1,100]")
+        if not 1 <= int(config["folder_rgb_jpeg_quality"]) <= 100:
+            raise ValueError("folder_rgb_jpeg_quality must be in [1,100]")
+        if config["storage_backend"] not in {"hdf5", "folder_npy"}:
+            raise ValueError("storage_backend must be 'hdf5' or 'folder_npy'")
         return config
 
     def _next_episode_number(self) -> int:
@@ -382,7 +584,7 @@ class DatasetRecorder(Node):
             return 0
         numbers = []
         for path in self.output_dir.glob("episode_*"):
-            match = re.fullmatch(r"episode_(\d+)\.(?:hdf5|inprogress)", path.name)
+            match = re.fullmatch(r"episode_(\d+)(?:\.hdf5|\.inprogress)?", path.name)
             if match:
                 numbers.append(int(match.group(1)))
         return max(numbers, default=-1) + 1
@@ -413,6 +615,29 @@ class DatasetRecorder(Node):
 
     def _buffer_arrival_message(self, key: str, message: Any) -> None:
         self._buffers[key].append((self.get_clock().now().nanoseconds, message))
+
+    def _prepare_image_for_recording(self, camera: str, stream: str, image: np.ndarray) -> np.ndarray:
+        """Center-crop and resize only streams that declare an HDF5 record_size."""
+        record_size = self.config["cameras"][camera].get("record_size")
+        if record_size is None:
+            return image
+        if image.ndim not in (2, 3):
+            raise ValueError(f"{camera}/{stream} image must be HxW or HxWxC, got {image.shape}")
+        target_w, target_h = map(int, record_size)
+        source_h, source_w = image.shape[:2]
+        if (source_w, source_h) == (target_w, target_h):
+            return image
+        source_ratio, target_ratio = source_w / source_h, target_w / target_h
+        if source_ratio > target_ratio:
+            crop_w = round(source_h * target_ratio)
+            left = (source_w - crop_w) // 2
+            image = image[:, left:left + crop_w]
+        elif source_ratio < target_ratio:
+            crop_h = round(source_w / target_ratio)
+            top = (source_h - crop_h) // 2
+            image = image[top:top + crop_h, :]
+        interpolation = cv2.INTER_NEAREST if stream == "depth" else cv2.INTER_AREA
+        return cv2.resize(image, (target_w, target_h), interpolation=interpolation)
 
     def _nearest(self, key: str, target: int) -> tuple[int, Any]:
         values = self._buffers[key]
@@ -456,6 +681,7 @@ class DatasetRecorder(Node):
                 # Explicit rgb8 conversion guarantees the stored channel order is RGB.
                 encoding = "rgb8" if stream == "rgb" else "passthrough"
                 image = self.bridge.imgmsg_to_cv2(message, desired_encoding=encoding)
+                image = self._prepare_image_for_recording(camera, stream, image)
                 images.setdefault(camera, {})[stream] = np.ascontiguousarray(image).copy()
                 source_stamps[f"{camera}_{stream}"] = stamp
             positions, velocities, actions, grippers, gripper_commands = [], [], [], [], []
@@ -520,7 +746,9 @@ class DatasetRecorder(Node):
             return
         self.recording = enabled
         if enabled:
-            path = self.output_dir / f"episode_{self._episode_number:05d}.hdf5"
+            self.recording_started_ns = self.get_clock().now().nanoseconds
+            suffix = ".hdf5" if self.config["storage_backend"] == "hdf5" else ""
+            path = self.output_dir / f"episode_{self._episode_number:05d}{suffix}"
             self._episode_number += 1
             joint_names = [
                 f"{arm}/{joint}"
@@ -538,6 +766,7 @@ class DatasetRecorder(Node):
             self.writer.put_control(StartEpisode(path, metadata))
             self.get_logger().info(f"{origin}: start requested: {path.name}")
         else:
+            self.recording_started_ns = None
             self.writer.put_control(EpisodeWriter.STOP)
             self.get_logger().info(f"{origin}: stop requested")
 
@@ -564,6 +793,11 @@ class DatasetRecorder(Node):
         status = String()
         status.data = json.dumps({
             "recording": self.recording,
+            "recording_elapsed_sec": (
+                0.0
+                if self.recording_started_ns is None
+                else max(0.0, (self.get_clock().now().nanoseconds - self.recording_started_ns) / 1e9)
+            ),
             "synced_frames": self.synced_frames,
             "dropped_frames": self.dropped_frames,
             "writer_queue": self.writer.events.qsize(),

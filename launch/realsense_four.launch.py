@@ -9,6 +9,10 @@ from launch_ros.actions import Node
 
 
 def camera(name, serial, depth):
+    # The fixed front D455 supplies Quest with sharp 1280x720 RGB, while its
+    # depth remains 640x480 to reduce USB load and avoid the D455 high-res
+    # depth-stream startup failures seen during teleoperation.
+    is_front = name == "front"
     return Node(
         package="realsense2_camera",
         executable="realsense2_camera_node",
@@ -30,7 +34,7 @@ def camera(name, serial, depth):
             "enable_accel": False,
             "unite_imu_method": 0,
             "align_depth.enable": depth,
-            "rgb_camera.color_profile": "640x480x30",
+            "rgb_camera.color_profile": "1280x720x30" if is_front else "640x480x30",
             "depth_module.depth_profile": "640x480x30",
         }],
     )

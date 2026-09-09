@@ -45,17 +45,12 @@ def episode_frame_count(file: h5py.File) -> int:
     return max(lengths, default=0)
 
 
-def infer_fps(file: h5py.File, frame_count: int, requested: float | None) -> float:
+def output_fps(requested: float | None) -> float:
+    """Use a constant review rate; one HDF5 sample is exactly one video frame."""
     if requested is not None:
         if requested <= 0:
             raise ValueError("--fps must be positive")
         return requested
-    if frame_count > 1 and "timestamps_ns" in file:
-        timestamps = file["timestamps_ns"][:]
-        deltas = np.diff(timestamps.astype(np.int64))
-        deltas = deltas[deltas > 0]
-        if len(deltas):
-            return float(np.clip(round(1e9 / np.median(deltas)), 1, 120))
     return 30.0
 
 
@@ -102,7 +97,7 @@ def export(episode: Path, output_dir: Path, fps_override: float | None, codec: s
         frames = episode_frame_count(file)
         if frames <= 0:
             raise ValueError(f"{episode} contains no recorded frames")
-        fps = infer_fps(file, frames, fps_override)
+        fps = output_fps(fps_override)
         datasets = {camera: rgb_dataset(file, camera) for camera, _ in CAMERAS}
         reference = next((dimensions(dataset) for dataset in datasets.values() if dimensions(dataset)), (640, 480))
         specs = [
@@ -134,7 +129,7 @@ def export(episode: Path, output_dir: Path, fps_override: float | None, codec: s
             for writer in writers:
                 writer.release()
 
-    print(f"Exported {frames} frames at {fps:g} FPS to {output_dir}")
+    print(f"Exported {frames} synchronized samples at {fps:g} FPS to {output_dir}")
     for spec, path in zip(specs, paths):
         state = "black (missing RGB dataset)" if spec.dataset is None else f"{spec.width}x{spec.height}"
         print(f"  {path.name}: {state}")

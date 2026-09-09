@@ -143,9 +143,24 @@ real_scripts/start_dual_vr_teleop.sh --confirm MOVE_BOTH_ARMS
 - 两臂均为 1:1 相对位姿、最大平移约 `0.25 m/s`、最大角速度约 `1.5 rad/s`。
 - 两个 TCP 在 front 相机坐标中的距离小于 `0.20 m` 时，双臂同时停止；松开再按住侧握把重新锚定后恢复。
 
-录制：右手柄 **B 键** 或网页“开始录制/停止并保存”按钮切换。退出 VR、网页断开或终端 `Ctrl-C` 会停止并保存当前 episode。
+录制：左手柄 **Y 键**、右手柄 **B 键**，或网页“开始录制/停止并保存”按钮均可切换。退出 VR、网页断开或终端 `Ctrl-C` 会停止并保存当前 episode。
 
 当前未接 side D455，双臂 episode 保存 front RGB-D、左右腕 RGB、双臂关节状态、commanded action 和夹爪状态/命令；side 相机视频会在导出时生成全黑占位。
+
+Quest VR 中央保持 front D455 的原始主视角；左、右两侧分别显示 left/right wrist RGB（未连接的一侧为黑屏）。front 预览为 `1280×720@30` 源图、目标 `15 FPS` 传输，两个腕部预览目标各 `10 FPS`，以优先保证遥操主视角稳定。D455 深度为 `640×480@30`；录制器仍将 front RGB 与深度写入 `640×480` HDF5 数据格式，腕部数据不变。
+
+导出视频默认每个已保存的同步样本写一帧、固定 `30 FPS`；若录制期间同步采样掉帧，视频会更短而不会插入重复帧。覆盖已有导出视频时追加 `--overwrite`。
+
+当前实时采集配置默认使用 HDF5 后端：新 episode 为 `episode_00001.hdf5`，所有 RGB、深度、关节状态和 action 均按同一个样本索引顺序追加到单个文件中。这样避免每帧创建多个文件带来的写盘延迟。
+
+历史文件夹 episode 导出视频：
+
+```bash
+ros2 run quest3_robot_data export_folder_episode_videos \
+  data/left_vr_episodes/episode_00003
+```
+
+覆盖已有视频时追加 `--overwrite`。
 
 ## 7. 数据目录与视频导出
 
@@ -198,7 +213,7 @@ ros2 run quest3_robot_data export_episode_videos \
 
 ## 8. 常用运行时诊断
 
-查看系统状态（重点查看 `right_arm_rtde` 是否为 `enabled` 或 `workspace stop`，以及 `*_gripper`）：
+查看系统状态（重点查看 `left_arm_rtde` / `right_arm_rtde` 是否为 `enabled`，以及 `*_gripper`）：
 
 ```bash
 ros2 topic echo /quest3/system_status
@@ -232,7 +247,19 @@ ros2 topic echo /right_arm/gripper_command
 
 若 Quest 页面黑屏：退出沉浸式会话、关闭旧浏览器标签，确认脚本日志中有 `front_camera.camera: RealSense Node Is Up!`，再在 Quest Browser 打开 `http://localhost:8765`。
 
-若右臂不动且状态为 `workspace stop`：检查 `hardware_dual_teleop.yaml` 中右臂工作空间；预检会主动报告当前 TCP 是否超出范围。
+若预检提示 `cannot check Quest ADB ... timed out`：这通常是首次启动 ADB daemon 超过旧的 3 秒窗口。当前版本已改为先启动 daemon 并等待最多 12 秒。仍失败时，退出所有头显上的 USB 调试授权提示后，在主机执行：
+
+```bash
+adb kill-server
+adb start-server
+adb devices -l
+```
+
+输出中 Quest 3 对应行必须是 `device`（不是 `unauthorized` 或 `no permissions`）；若是 `unauthorized`，戴上头显并在 USB 调试提示中选择允许。
+
+当前遥操配置不设置软件 Cartesian 工作空间；实际运动边界由 UR 控制柜中的安全平面、关节限制、速度限制及急停负责。若任一臂不动，先查看系统状态和示教器的安全/保护停机提示。
+
+发生保护停机或急停后，先在示教器解除故障并重新使能机械臂。运行中的遥操程序会每秒自动尝试重建 RTDE 连接；状态显示 `reconnected; release and re-press clutch` 后，必须先松开再重新按住对应手柄侧握把，才会建立新的相对位姿锚点并允许该臂运动。
 
 ## 9. 紧急停止
 

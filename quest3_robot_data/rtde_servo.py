@@ -100,10 +100,24 @@ class ArmWorker(threading.Thread):
         self.target: np.ndarray | None = None
         self.target_time = 0.0
         self.enabled = False
+        # A protective stop/E-stop terminates the injected RTDE control
+        # program.  Never accept a target made before that event after RTDE
+        # reconnects; require a new clutch cycle instead.
+        self._rearm_required = False
+        self._released_since_reconnect = False
         self.stopping = threading.Event()
         self.status = "connecting"
-        self.workspace_min = np.asarray(config["workspace_min"], dtype=float)
-        self.workspace_max = np.asarray(config["workspace_max"], dtype=float)
+        # A virtual Cartesian workspace is optional.  The deployed teleop
+        # configurations deliberately omit it: the UR controller's safety
+        # planes/limits remain the authoritative motion boundary.
+        workspace_min = config.get("workspace_min")
+        workspace_max = config.get("workspace_max")
+        if (workspace_min is None) != (workspace_max is None):
+            raise ValueError(
+                f"{name}: workspace_min and workspace_max must be set together, or both omitted"
+            )
+        self.workspace_min = None if workspace_min is None else np.asarray(workspace_min, dtype=float)
+        self.workspace_max = None if workspace_max is None else np.asarray(workspace_max, dtype=float)
         self.use_active_robot_tcp = config.get("tcp_source", "calibration_file") == "robot_active_tcp"
         self.tcp_offset: list[float] | None = None
         if not self.use_active_robot_tcp:
@@ -142,7 +156,31 @@ class ArmWorker(threading.Thread):
 
     def set_enabled(self, value: bool) -> None:
         with self._lock:
-            self.enabled = bool(value)
+            requested = bool(value)
+            if not self._rearm_required:
+                self.enabled = requested
+            elif not requested:
+                # A release clears the way for the following press.  The pose
+                # mapper resets its hand/TCP anchors while the clutch is open.
+                self._released_since_reconnect = True
+                self.enabled = False
+            elif self._released_since_reconnect:
+                self._rearm_required = False
+                self.enabled = True
+                self.status = "ready"
+            else:
+                # Do not honor a clutch that has been held since before the
+                # robot-side control script was stopped.
+                self.enabled = False
+
+    def _require_rearm(self) -> None:
+        """Discard pre-stop commands and wait for release then clutch press."""
+        with self._lock:
+            self.enabled = False
+            self.target = None
+            self.target_time = 0.0
+            self._rearm_required = True
+            self._released_since_reconnect = False
 
     def command_gripper(self, value: float) -> None:
         if self.gripper is not None:
@@ -174,82 +212,113 @@ class ArmWorker(threading.Thread):
         self.gripper_pub.publish(grip)
 
     def run(self) -> None:
-        control = receive = None
-        active = False
         try:
             from rtde_control import RTDEControlInterface
             from rtde_receive import RTDEReceiveInterface
-            receive = RTDEReceiveInterface(self.config["robot_ip"])
-            if self.motion_enabled:
-                control = RTDEControlInterface(self.config["robot_ip"])
-                # For robot_active_tcp, leave the pendant-selected TCP alone.
-                # URScript's active TCP is used by Cartesian commands; calling
-                # setTcp without the pendant's six exact calibration values
-                # would silently switch control to a different point.
-                if not self.use_active_robot_tcp:
-                    assert self.tcp_offset is not None
-                    control.setTcp(self.tcp_offset)
-            hz = float(self.common.get("control_hz", 125.0))
-            dt = 1.0 / hz
-            timeout = float(self.common["target_timeout_sec"])
-            self.status = "ready" if self.motion_enabled else "receive-only (enable_motion=false)"
-            publish_divisor = max(1, round(hz / 30.0))
-            iteration = 0
-            while not self.stopping.is_set():
-                period_start = control.initPeriod() if control else None
-                with self._lock:
-                    enabled, target, age = self.enabled, self.target, time.monotonic() - self.target_time
-                valid = self.motion_enabled and enabled and target is not None and age <= timeout
-                if valid:
-                    position = target[:3, 3]
-                    if np.any(position < self.workspace_min) or np.any(position > self.workspace_max):
-                        valid = False
-                        self.status = "workspace stop"
-                    else:
-                        actual = np.asarray(receive.getActualTCPPose(), dtype=float)
-                        actual_matrix = ur_pose_to_matrix(actual)
-                        safe_target = target.copy()
-                        delta = safe_target[:3, 3] - actual[:3]
-                        max_jump = float(self.common["max_target_jump_m"])
-                        norm = float(np.linalg.norm(delta))
-                        if norm > max_jump:
-                            safe_target[:3, 3] = actual[:3] + delta / norm * max_jump
-                        rotation_delta = safe_target[:3, :3] @ actual_matrix[:3, :3].T
-                        rotation_vector = matrix_to_rotvec(rotation_delta)
-                        rotation_norm = float(np.linalg.norm(rotation_vector))
-                        max_rotation = float(self.common["max_target_jump_rad"])
-                        if rotation_norm > max_rotation:
-                            safe_target[:3, :3] = (
-                                rotvec_to_matrix(rotation_vector / rotation_norm * max_rotation)
-                                @ actual_matrix[:3, :3]
-                            )
-                        command = matrix_to_ur_pose(safe_target)
-                        control.servoL(command.tolist(), float(self.common["speed"]), float(self.common["acceleration"]), dt, float(self.common["lookahead_time"]), float(self.common["gain"]))
-                        active = True
-                        self.status = "enabled"
-                if not valid and active:
-                    control.servoStop()
-                    active = False
-                    if self.status == "enabled":
-                        self.status = "stopped"
-                if iteration % publish_divisor == 0:
-                    self._publish(receive)
-                iteration += 1
-                if control:
-                    control.waitPeriod(period_start)
-                else:
-                    time.sleep(dt)
         except Exception as exc:
-            self.status = f"error: {exc!r}"
-        finally:
-            if control:
-                try:
-                    control.servoStop()
-                    control.stopScript()
-                except Exception:
-                    pass
-            if self.gripper:
-                self.gripper.stop()
+            self.status = f"error importing RTDE: {exc!r}"
+            return
+
+        hz = float(self.common.get("control_hz", 125.0))
+        dt = 1.0 / hz
+        timeout = float(self.common["target_timeout_sec"])
+        publish_divisor = max(1, round(hz / 30.0))
+        reconnect_delay = max(0.1, float(self.common.get("rtde_reconnect_interval_sec", 1.0)))
+        attempt = 0
+        while not self.stopping.is_set():
+            control = receive = None
+            active = False
+            try:
+                attempt += 1
+                self.status = "connecting" if attempt == 1 else f"reconnecting (attempt {attempt})"
+                receive = RTDEReceiveInterface(self.config["robot_ip"])
+                if self.motion_enabled:
+                    control = RTDEControlInterface(self.config["robot_ip"])
+                    # For robot_active_tcp, leave the pendant-selected TCP alone.
+                    if not self.use_active_robot_tcp:
+                        assert self.tcp_offset is not None
+                        control.setTcp(self.tcp_offset)
+                self.status = (
+                    "reconnected; release and re-press clutch"
+                    if self._rearm_required
+                    else ("ready" if self.motion_enabled else "receive-only (enable_motion=false)")
+                )
+                attempt = 0
+                iteration = 0
+                while not self.stopping.is_set():
+                    period_start = control.initPeriod() if control else None
+                    with self._lock:
+                        enabled, target, age = self.enabled, self.target, time.monotonic() - self.target_time
+                    valid = self.motion_enabled and enabled and target is not None and age <= timeout
+                    if valid:
+                        position = target[:3, 3]
+                        if (
+                            self.workspace_min is not None
+                            and self.workspace_max is not None
+                            and (np.any(position < self.workspace_min) or np.any(position > self.workspace_max))
+                        ):
+                            valid = False
+                            self.status = "workspace stop"
+                        else:
+                            actual = np.asarray(receive.getActualTCPPose(), dtype=float)
+                            actual_matrix = ur_pose_to_matrix(actual)
+                            safe_target = target.copy()
+                            delta = safe_target[:3, 3] - actual[:3]
+                            max_jump = float(self.common["max_target_jump_m"])
+                            norm = float(np.linalg.norm(delta))
+                            if norm > max_jump:
+                                safe_target[:3, 3] = actual[:3] + delta / norm * max_jump
+                            rotation_delta = safe_target[:3, :3] @ actual_matrix[:3, :3].T
+                            rotation_vector = matrix_to_rotvec(rotation_delta)
+                            rotation_norm = float(np.linalg.norm(rotation_vector))
+                            max_rotation = float(self.common["max_target_jump_rad"])
+                            if rotation_norm > max_rotation:
+                                safe_target[:3, :3] = (
+                                    rotvec_to_matrix(rotation_vector / rotation_norm * max_rotation)
+                                    @ actual_matrix[:3, :3]
+                                )
+                            command = matrix_to_ur_pose(safe_target)
+                            control.servoL(command.tolist(), float(self.common["speed"]), float(self.common["acceleration"]), dt, float(self.common["lookahead_time"]), float(self.common["gain"]))
+                            active = True
+                            self.status = "enabled"
+                    if not valid and active:
+                        control.servoStop()
+                        active = False
+                        if self.status == "enabled":
+                            self.status = "stopped"
+                    if iteration % publish_divisor == 0:
+                        self._publish(receive)
+                    iteration += 1
+                    if control:
+                        control.waitPeriod(period_start)
+                    else:
+                        time.sleep(dt)
+            except Exception as exc:
+                if self.stopping.is_set():
+                    break
+                self._require_rearm()
+                self.status = f"RTDE lost; retrying: {exc!s}"
+            finally:
+                if control:
+                    try:
+                        if active:
+                            control.servoStop()
+                        control.stopScript()
+                    except Exception:
+                        pass
+                for interface in (control, receive):
+                    if interface:
+                        try:
+                            interface.disconnect()
+                        except Exception:
+                            pass
+            if not self.stopping.is_set():
+                self.stopping.wait(reconnect_delay)
+
+        # The gripper connection is independent of the UR RTDE program and is
+        # intentionally kept alive while the arm is recovering from an E-stop.
+        if self.gripper:
+            self.gripper.stop()
 
     def stop(self) -> None:
         self.stopping.set()
