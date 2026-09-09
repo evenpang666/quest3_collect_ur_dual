@@ -200,7 +200,7 @@ ros2 run quest3_robot_data calibrate_camera_charuco \
 
 已通过 front 外参、并已在 UR 示教器激活“Robotiq 合爪尖端”TCP 后，使用
 `config/hardware_left_teleop.yaml`。该配置只连接左腕 D435i 与 front D455，使用
-**左手柄→左臂**，平移/旋转均为 `1.0×` 手柄相对位姿，`0.25 m/s` 限速。RTDE 不会重新设置 TCP，
+**左手柄→左臂**，平移/旋转均为 `1.0×` 手柄相对位姿，`0.45 m/s` 限速。RTDE 不会重新设置 TCP，
 因此必须确认示教器当前活动 TCP 就是已标定的 Robotiq 合爪尖端。
 
 启动脚本会先启动两台 RealSense 并等待 front D455 出现图像；若 25 秒内没有图像，
@@ -252,7 +252,7 @@ ros2 run quest3_robot_data calibrate_camera_charuco \
   --confirm MOVE_BOTH_ARMS
 ```
 
-左右手柄分别控制左右 UR，速度/增益/力度与当前左臂完全一致：`1:1` 相对位姿、`0.25 m/s`、约 `1.5 rad/s`、夹爪速度 `20/255`、力度 `25/255`。双臂目标在 front 相机坐标中小于 `0.20 m` 时会同时停止；分别松开并重新按住侧握把后才会恢复。
+左右手柄分别控制左右 UR，速度/增益/力度与当前左臂完全一致：`1:1` 相对位姿、`0.45 m/s`、约 `3.0 rad/s`、夹爪速度 `20/255`、力度 `25/255`。双臂目标在 front 相机坐标中小于 `0.20 m` 时会同时停止；分别松开并重新按住侧握把后才会恢复。
 
 启动前预检会读取两臂当前 TCP，确认其位于各自的虚拟工作空间内；若显示
 当前 `hardware_left_teleop.yaml` 与 `hardware_dual_teleop.yaml` 不设置软件 Cartesian

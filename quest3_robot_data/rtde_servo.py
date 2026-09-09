@@ -7,7 +7,7 @@ import queue
 import threading
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 import rclpy
@@ -93,6 +93,7 @@ class ArmWorker(threading.Thread):
         common: dict[str, Any],
         config_path: Path,
         allow_uncalibrated: bool = False,
+        safety_event_callback: Callable[[str, str, str], None] | None = None,
     ):
         super().__init__(name=f"rtde-{name}", daemon=True)
         self.node, self.name, self.config, self.common = node, name, config, common
@@ -105,6 +106,8 @@ class ArmWorker(threading.Thread):
         # reconnects; require a new clutch cycle instead.
         self._rearm_required = False
         self._released_since_reconnect = False
+        self._safety_event_callback = safety_event_callback
+        self._fault_active = False
         self.stopping = threading.Event()
         self.status = "connecting"
         # A virtual Cartesian workspace is optional.  The deployed teleop
@@ -182,6 +185,19 @@ class ArmWorker(threading.Thread):
             self._rearm_required = True
             self._released_since_reconnect = False
 
+    def _report_safety_event(self, event: str, detail: str) -> None:
+        """Report one loss-of-control event until normal RTDE state returns."""
+        with self._lock:
+            if self._fault_active:
+                return
+            self._fault_active = True
+        if self._safety_event_callback is not None:
+            self._safety_event_callback(self.name, event, detail)
+
+    def _clear_safety_event(self) -> None:
+        with self._lock:
+            self._fault_active = False
+
     def command_gripper(self, value: float) -> None:
         if self.gripper is not None:
             self.gripper.command(value)
@@ -245,8 +261,27 @@ class ArmWorker(threading.Thread):
                 )
                 attempt = 0
                 iteration = 0
+                last_safety_check = 0.0
                 while not self.stopping.is_set():
                     period_start = control.initPeriod() if control else None
+                    # RTDE's receive interface exposes the controller safety
+                    # state even while no clutch is held.  Poll it separately
+                    # from servoL so an E-stop also interrupts an episode when
+                    # the operator is not actively moving the arm.
+                    now = time.monotonic()
+                    if now - last_safety_check >= 0.10:
+                        last_safety_check = now
+                        if receive.isEmergencyStopped():
+                            self._report_safety_event(
+                                "emergency_stop", "UR emergency stop is active"
+                            )
+                            raise RuntimeError("UR emergency stop is active")
+                        if receive.isProtectiveStopped():
+                            self._report_safety_event(
+                                "protective_stop", "UR protective stop is active"
+                            )
+                            raise RuntimeError("UR protective stop is active")
+                        self._clear_safety_event()
                     with self._lock:
                         enabled, target, age = self.enabled, self.target, time.monotonic() - self.target_time
                     valid = self.motion_enabled and enabled and target is not None and age <= timeout
@@ -278,7 +313,26 @@ class ArmWorker(threading.Thread):
                                     @ actual_matrix[:3, :3]
                                 )
                             command = matrix_to_ur_pose(safe_target)
-                            control.servoL(command.tolist(), float(self.common["speed"]), float(self.common["acceleration"]), dt, float(self.common["lookahead_time"]), float(self.common["gain"]))
+                            # ur_rtde reports a robot-side URScript loss (for
+                            # example after an E-stop/protective stop) by
+                            # returning False.  It does not necessarily raise
+                            # a Python exception, so treating this exactly as
+                            # a connection failure is essential: discard the
+                            # stale target, tear down this interface and let
+                            # the outer loop reconnect indefinitely.
+                            servo_ok = control.servoL(
+                                command.tolist(),
+                                float(self.common["speed"]),
+                                float(self.common["acceleration"]),
+                                dt,
+                                float(self.common["lookahead_time"]),
+                                float(self.common["gain"]),
+                            )
+                            if servo_ok is False:
+                                self._report_safety_event(
+                                    "rtde_control_lost", "UR RTDE control script is not running"
+                                )
+                                raise RuntimeError("UR RTDE control script is not running")
                             active = True
                             self.status = "enabled"
                     if not valid and active:
@@ -296,6 +350,7 @@ class ArmWorker(threading.Thread):
             except Exception as exc:
                 if self.stopping.is_set():
                     break
+                self._report_safety_event("rtde_connection_lost", str(exc))
                 self._require_rearm()
                 self.status = f"RTDE lost; retrying: {exc!s}"
             finally:
@@ -339,6 +394,11 @@ class RTDEServoNode(Node):
             self.get_logger().warning(
                 "UNCALIBRATED RECEIVE-ONLY DEBUG: RTDE state will be read, but robot and gripper motion are disabled"
             )
+        # Create publishers before starting worker threads: a connection may
+        # fail immediately during startup and must still be able to signal the
+        # recorder/UI safely.
+        self.status_pub = self.create_publisher(String, "/quest3/system_status", 10)
+        self.safety_event_pub = self.create_publisher(String, "/quest3/safety_event", 10)
         self.workers: dict[str, ArmWorker] = {}
         self._subscriptions = []
         # Validate every arm completely before starting any network/control
@@ -360,15 +420,28 @@ class RTDEServoNode(Node):
                 if not tcp.get("calibrated", False) or len(tcp.get("tcp_offset_xyz_rotvec", [])) != 6:
                     raise ValueError(f"invalid TCP calibration: {tcp_path}")
         for name, arm in config["arms"].items():
-            worker = ArmWorker(self, name, arm, common, config_path, allow_uncalibrated)
+            worker = ArmWorker(
+                self,
+                name,
+                arm,
+                common,
+                config_path,
+                allow_uncalibrated,
+                self._publish_safety_event,
+            )
             self.workers[name] = worker
             self._subscriptions.extend([
                 self.create_subscription(PoseStamped, arm["target_topic"], worker.set_target, 10),
                 self.create_subscription(Bool, arm["enabled_topic"], lambda m, w=worker: w.set_enabled(m.data), 10),
                 self.create_subscription(Float32, arm["gripper_command_topic"], lambda m, w=worker: w.command_gripper(m.data), 10),
             ])
-        self.status_pub = self.create_publisher(String, "/quest3/system_status", 10)
         self.create_timer(0.2, self._status)
+
+    def _publish_safety_event(self, arm: str, event: str, detail: str) -> None:
+        message = String()
+        message.data = json.dumps({"event": event, "arm": arm, "detail": detail})
+        self.safety_event_pub.publish(message)
+        self.get_logger().error(f"Safety event from {arm}: {event}: {detail}")
 
     def _status(self) -> None:
         message = String()

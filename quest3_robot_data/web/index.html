@@ -19,13 +19,13 @@ button{font-size:1rem;padding:.75rem 1rem;margin:.3rem}.danger{background:#9d263
 <script>
 (()=>{
 const $=id=>document.getElementById(id), status=$('status'), connect=$('connect'), enter=$('enter'), record=$('record');
-let ws,session,space,gl,layer,renderer,lastSent=0,recording=false,recordingStartMs=null,previewCanvas=null,previewContext=null;
+let ws,session,space,gl,layer,renderer,lastSent=0,recording=false,recordingStartMs=null,recordingInterrupted='',previewCanvas=null,previewContext=null;
 const imageStreams={front:{last:0,pending:false},left_wrist:{last:0,pending:false},right_wrist:{last:0,pending:false}};
 let recenterLeft=false,recenterRight=false,lastRecordLeft=false,lastRecordRight=false;
 const set=t=>status.textContent=t;
 function recordingElapsed(){return recording&&recordingStartMs!==null?(performance.now()-recordingStartMs)/1000:0}
 function formatDuration(seconds){const total=Math.max(0,Math.floor(seconds));return `${String(Math.floor(total/60)).padStart(2,'0')}:${String(total%60).padStart(2,'0')}`}
-function applyRecordingState(value,elapsed){const next=!!value;if(next){const seconds=Number(elapsed);if(Number.isFinite(seconds))recordingStartMs=performance.now()-Math.max(0,seconds)*1000;else if(!recording)recordingStartMs=performance.now()}else recordingStartMs=null;recording=next;record.textContent=next?'停止并保存':'开始录制'}
+function applyRecordingState(value,elapsed,interrupted){const next=!!value;if(interrupted===null)recordingInterrupted='';else if(typeof interrupted==='string'&&interrupted)recordingInterrupted=interrupted;if(next){recordingInterrupted='';const seconds=Number(elapsed);if(Number.isFinite(seconds))recordingStartMs=performance.now()-Math.max(0,seconds)*1000;else if(!recording)recordingStartMs=performance.now()}else recordingStartMs=null;recording=next;record.textContent=next?'停止并保存':'开始录制'}
 function button(src,i){return src?.gamepad?.buttons?.[i]?.value||0}
 function controller(src,frame){
   if(!src)return null; const pose=frame.getPose(src.gripSpace||src.targetRaySpace,space); if(!pose)return null;
@@ -33,13 +33,13 @@ function controller(src,frame){
   return {position:[p.x,p.y,p.z],orientation:[q.x,q.y,q.z,q.w],trigger:button(src,0),squeeze:button(src,1),thumbstick:button(src,3),secondary:button(src,5)};
 }
 function send(value){if(ws?.readyState===WebSocket.OPEN)ws.send(JSON.stringify(value))}
-function setRecording(value){applyRecordingState(value);send({type:'record',recording:value})}
+function setRecording(value){applyRecordingState(value,undefined,value?null:undefined);send({type:'record',recording:value})}
 function connectWs(){
   if(ws?.readyState===WebSocket.OPEN)return;
   ws=new WebSocket(`${location.protocol==='https:'?'wss':'ws'}://${location.host}/ws`);
   ws.onopen=()=>{connect.disabled=true;enter.disabled=false;record.disabled=false;set('服务器已连接；进入 VR 后先小幅验证左右臂映射。')};
   ws.onclose=()=>{connect.disabled=false;enter.disabled=true;record.disabled=true;recording=false;set('连接断开：录制已停止，机械臂 watchdog 将停止运动。')};
-  ws.onmessage=e=>{const d=JSON.parse(e.data);if(d.type==='status'){applyRecordingState(d.recording,d.recording_elapsed_sec);set(`VR连接: 是\n录制: ${recording?'进行中':'未录制'} ${recording?formatDuration(recordingElapsed()):''}\n同步帧: ${d.synced_frames??'-'}\n丢帧: ${d.dropped_frames??'-'}\n左臂: ${d.left_arm??'等待'} / ${d.left_arm_rtde??'RTDE等待'}\n左夹爪: ${d.left_arm_gripper??'等待'}\n右臂: ${d.right_arm??'等待'} / ${d.right_arm_rtde??'RTDE等待'}\n右夹爪: ${d.right_arm_gripper??'未连接'}\n双臂距离保护: ${d.dual_tcp_guard??'-'}`)}};
+  ws.onmessage=e=>{const d=JSON.parse(e.data);if(d.type==='status'){applyRecordingState(d.recording,d.recording_elapsed_sec,d.recording_interrupted);const interrupt=recordingInterrupted?`\n⚠ 录制中断: ${recordingInterrupted}`:'';set(`VR连接: 是\n录制: ${recording?'进行中':'未录制'} ${recording?formatDuration(recordingElapsed()):''}${interrupt}\n同步帧: ${d.synced_frames??'-'}\n丢帧: ${d.dropped_frames??'-'}\n左臂: ${d.left_arm??'等待'} / ${d.left_arm_rtde??'RTDE等待'}\n左夹爪: ${d.left_arm_gripper??'等待'}\n右臂: ${d.right_arm??'等待'} / ${d.right_arm_rtde??'RTDE等待'}\n右夹爪: ${d.right_arm_gripper??'未连接'}\n双臂距离保护: ${d.dual_tcp_guard??'-'}`)}};
 }
 function shader(type,source){const s=gl.createShader(type);gl.shaderSource(s,source);gl.compileShader(s);if(!gl.getShaderParameter(s,gl.COMPILE_STATUS))throw Error(gl.getShaderInfoLog(s));return s}
 function program(v,f){const p=gl.createProgram();gl.attachShader(p,shader(gl.VERTEX_SHADER,v));gl.attachShader(p,shader(gl.FRAGMENT_SHADER,f));gl.linkProgram(p);return p}
@@ -70,9 +70,9 @@ function updatePreviewTexture(bitmap){
  if(!previewCanvas||previewCanvas.width!==width||previewCanvas.height!==height){previewCanvas=document.createElement('canvas');previewCanvas.width=width;previewCanvas.height=height;previewContext=previewCanvas.getContext('2d')}
  previewContext.drawImage(bitmap,0,0,width,height);
  const fontSize=Math.max(20,Math.round(width*.030)),pad=Math.round(fontSize*.55);
- const label=recording?`● 正在录制 ${formatDuration(recordingElapsed())}  |  按 Y / B 停止并保存`:'未录制  |  按左手 Y 或右手 B 开始录制';
+ const label=recordingInterrupted?`⚠ ${recordingInterrupted}`:(recording?`● 正在录制 ${formatDuration(recordingElapsed())}  |  按 Y / B 停止并保存`:'未录制  |  按左手 Y 或右手 B 开始录制');
  previewContext.font=`700 ${fontSize}px sans-serif`;const textWidth=previewContext.measureText(label).width;
- previewContext.fillStyle=recording?'rgba(180,20,35,.88)':'rgba(10,18,32,.78)';previewContext.fillRect(pad,pad,textWidth+pad*2,fontSize+pad*2);
+ previewContext.fillStyle=recordingInterrupted?'rgba(195,105,0,.92)':(recording?'rgba(180,20,35,.88)':'rgba(10,18,32,.78)');previewContext.fillRect(pad,pad,textWidth+pad*2,fontSize+pad*2);
  previewContext.fillStyle='#fff';previewContext.fillText(label,pad*2,pad*2+fontSize*.80);
  gl.bindTexture(gl.TEXTURE_2D,renderer.panels.front.t);gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL,false);gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,previewCanvas);
 }

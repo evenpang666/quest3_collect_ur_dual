@@ -462,6 +462,7 @@ class DatasetRecorder(Node):
         )
         self.recording = False
         self.recording_started_ns: int | None = None
+        self.recording_interrupted_reason: str | None = None
         self.synced_frames = 0
         self.enqueued_frames = 0
         self.dropped_frames = 0
@@ -474,6 +475,9 @@ class DatasetRecorder(Node):
 
         self.record_sub = self.create_subscription(
             Bool, self.config["record_topic"], self._record_command, 10
+        )
+        self.safety_sub = self.create_subscription(
+            String, "/quest3/safety_event", self._safety_event, 10
         )
         self.status_pub = self.create_publisher(String, "/quest3/system_status", 10)
         self.create_timer(0.005, self._aggregate_latest_reference)
@@ -736,6 +740,32 @@ class DatasetRecorder(Node):
     def _record_command(self, message: Bool) -> None:
         self._set_recording(message.data, origin="ROS")
 
+    def _safety_event(self, message: String) -> None:
+        """Finish an active episode when RTDE reports loss of robot control."""
+        try:
+            value = json.loads(message.data)
+        except json.JSONDecodeError:
+            return
+        if not isinstance(value, dict):
+            return
+        event = str(value.get("event", "robot safety event"))
+        arm = str(value.get("arm", "robot"))
+        descriptions = {
+            "emergency_stop": "急停已触发",
+            "protective_stop": "保护停机",
+            "rtde_control_lost": "RTDE 控制脚本已停止",
+            "rtde_connection_lost": "RTDE 连接已丢失",
+        }
+        arm_label = {"left_arm": "左臂", "right_arm": "右臂"}.get(arm, arm)
+        reason = f"{arm_label}：{descriptions.get(event, event)}；录制已安全中断并保存"
+        if not self.recording:
+            return
+        self.recording_interrupted_reason = reason
+        self._set_recording(False, origin=f"SAFETY INTERRUPT ({reason})")
+        # Do not wait for the two-second statistics timer before the headset
+        # learns that the episode has been safely finalized.
+        self._publish_status()
+
     def _set_recording(self, enabled: bool, origin: str) -> None:
         if enabled == self.recording:
             return
@@ -746,6 +776,7 @@ class DatasetRecorder(Node):
             return
         self.recording = enabled
         if enabled:
+            self.recording_interrupted_reason = None
             self.recording_started_ns = self.get_clock().now().nanoseconds
             suffix = ".hdf5" if self.config["storage_backend"] == "hdf5" else ""
             path = self.output_dir / f"episode_{self._episode_number:05d}{suffix}"
@@ -790,6 +821,9 @@ class DatasetRecorder(Node):
             f"recording={self.recording} synced={self.synced_frames} "
             f"queued={self.enqueued_frames} dropped={self.dropped_frames}"
         )
+        self._publish_status()
+
+    def _publish_status(self) -> None:
         status = String()
         status.data = json.dumps({
             "recording": self.recording,
@@ -802,6 +836,7 @@ class DatasetRecorder(Node):
             "dropped_frames": self.dropped_frames,
             "writer_queue": self.writer.events.qsize(),
             "writer_error": repr(self.writer.failed) if self.writer.failed else None,
+            "recording_interrupted": self.recording_interrupted_reason,
         })
         self.status_pub.publish(status)
 

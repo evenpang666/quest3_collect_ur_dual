@@ -34,6 +34,7 @@ class QuestWebNode(Node):
         self.controller_pub = self.create_publisher(String, "/quest3/controllers", 10)
         self.record_pub = self.create_publisher(Bool, "/quest3/recording", 10)
         self.status_sub = self.create_subscription(String, "/quest3/system_status", self._status, 10)
+        self.safety_sub = self.create_subscription(String, "/quest3/safety_event", self._safety_event, 10)
         self.bridge = CvBridge()
         self.jpeg_quality = int(jpeg_quality)
         self.min_image_period = {
@@ -83,6 +84,32 @@ class QuestWebNode(Node):
         except json.JSONDecodeError:
             pass
 
+    def _safety_event(self, message: String) -> None:
+        """Immediately reflect a robot safety event in the headset UI."""
+        try:
+            value = json.loads(message.data)
+        except json.JSONDecodeError:
+            return
+        if not isinstance(value, dict):
+            return
+        event = str(value.get("event", "robot safety event"))
+        arm = str(value.get("arm", "robot"))
+        arm_label = {"left_arm": "左臂", "right_arm": "右臂"}.get(arm, arm)
+        event_label = {
+            "emergency_stop": "急停已触发",
+            "protective_stop": "保护停机",
+            "rtde_control_lost": "RTDE 控制脚本已停止",
+            "rtde_connection_lost": "RTDE 连接已丢失",
+        }.get(event, event)
+        reason = f"{arm_label}：{event_label}；录制已安全中断并保存"
+        with self._lock:
+            self.status.update({
+                "recording": False,
+                "recording_elapsed_sec": 0.0,
+                "recording_interrupted": reason,
+                "safety_event": reason,
+            })
+
     def publish_pose(self, payload: dict[str, Any]) -> None:
         payload["host_timestamp_ns"] = self.get_clock().now().nanoseconds
         message = String()
@@ -95,6 +122,9 @@ class QuestWebNode(Node):
         self.record_pub.publish(message)
         with self._lock:
             self.status["recording"] = bool(enabled)
+            if enabled:
+                self.status["recording_interrupted"] = None
+                self.status["safety_event"] = None
 
     def snapshot(self, camera: str | None = None) -> tuple[bytes | None, dict[str, Any]]:
         with self._lock:
