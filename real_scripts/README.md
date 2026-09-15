@@ -6,7 +6,7 @@
 
 | 设备 | 参数 | 状态 |
 |---|---|---|
-| UR7e | `192.168.124.58/24` | ping、30004、63352 已通过 |
+| UR7e | `192.168.124.61/24` | ping、30004、63352 已通过 |
 | 主机有线口 | `enp4s0`，`192.168.124.59/24` | 永久静态、无网关 |
 | Quest 3 | `2G97C5ZJ2L05V1` | ADB authorized |
 | front | D455，`260922305390` | 更换接线后重新识别 |
@@ -34,7 +34,7 @@ sudo apt install -y python3-pip
 /usr/bin/python3 -m pip install --user ur-rtde
 ```
 
-当前阶段不需要 `pyrealsense2`；预检会回退使用 `rs-enumerate-devices`。
+预检会在缺少 `pyrealsense2` 时回退使用 `rs-enumerate-devices`；但独立 front 相机预览工具需要 `pyrealsense2`。
 
 验证：
 
@@ -151,13 +151,13 @@ ros2 topic echo /left_arm/target_tcp_pose
 先运行 dry-run；默认只计算 `wrist_3` 的 `+0.5°` 目标，不发送命令：
 
 ```bash
-ros2 run quest3_robot_data joint_motion_probe --ip 192.168.124.58
+ros2 run quest3_robot_data joint_motion_probe --ip 192.168.124.61
 ```
 
 确认示教器为自动模式、机器人周围无人无障碍、急停可触达，并确认腕部线缆允许微量转动后，才执行：
 
 ```bash
-ros2 run quest3_robot_data joint_motion_probe --ip 192.168.124.58 \
+ros2 run quest3_robot_data joint_motion_probe --ip 192.168.124.61 \
   --execute --confirm ROBOT_AREA_CLEAR
 ```
 
@@ -171,7 +171,7 @@ ros2 run quest3_robot_data joint_motion_probe --ip 192.168.124.58 \
 
 ```bash
 ros2 run quest3_robot_data calibrate_camera_charuco \
-  --robot-ip 192.168.124.58 \
+  --robot-ip 192.168.124.61 \
   --camera-serial 260922305390 \
   --base-frame left_base \
   --camera-frame front_camera_color_optical_frame \
@@ -213,10 +213,13 @@ front RGB-D；接入 side D455 后再使用双相机数据采集配置。
 ```bash
 conda deactivate 2>/dev/null || true
 /home/mypc/Documents/pyw/projects/quest3_collect/real_scripts/start_left_vr_teleop.sh \
-  --confirm MOVE_LEFT_ARM
+  --confirm MOVE_LEFT_ARM \
+  --task "将红色积木放入蓝色容器"
 ```
 
 Quest Browser 打开 `http://localhost:8765`，点击“连接”“进入 VR”。只有按住**左手柄侧握把**时才会给左臂发目标；先按住不移动，确认机械臂不动后，再以毫米级缓慢移动。运行中按 `Ctrl-C` 会调用 `servoStop` 并停止全部节点。
+
+`--task` 必填，且在整个脚本运行期间不可变。每个保存的 HDF5 根属性 `task_description` 都会记录该文本；要录制新任务，退出脚本后以新的 `--task` 参数启动。
 
 夹爪与机械臂离合独立：左手柄扳机按下（阈值 `0.15`）时 2F-85 以低速合拢，松开时以低速张开。当前 Robotiq 寄存器设置为速度 `20/255`、力度 `25/255`。不握侧握把也可测试夹爪，机械臂不会移动；Quest 或手柄追踪丢失时保持夹爪最后位置。
 
@@ -249,7 +252,8 @@ ros2 run quest3_robot_data calibrate_camera_charuco \
 
 ```bash
 /home/mypc/Documents/pyw/projects/quest3_collect/real_scripts/start_dual_vr_teleop.sh \
-  --confirm MOVE_BOTH_ARMS
+  --confirm MOVE_BOTH_ARMS \
+  --task "双臂协作将物体放入指定区域"
 ```
 
 左右手柄分别控制左右 UR，速度/增益/力度与当前左臂完全一致：`1:1` 相对位姿、`0.45 m/s`、约 `3.0 rad/s`、夹爪速度 `20/255`、力度 `25/255`。双臂目标在 front 相机坐标中小于 `0.20 m` 时会同时停止；分别松开并重新按住侧握把后才会恢复。

@@ -8,8 +8,9 @@ HARDWARE_CONFIG="$PROJECT_DIR/config/hardware_dual_teleop.yaml"
 RECORDER_CONFIG="$PROJECT_DIR/config/dual_arm_front_only.yaml"
 OUTPUT_DIR="$PROJECT_DIR/data/dual_vr_episodes"
 CONFIRMATION="MOVE_BOTH_ARMS"
+TASK_DESCRIPTION=""
 
-if [[ "${1:-}" != "--confirm" || "${2:-}" != "$CONFIRMATION" ]]; then
+if [[ "${1:-}" != "--confirm" || "${2:-}" != "$CONFIRMATION" || "${3:-}" != "--task" || -z "${4:-}" || $# -ne 4 ]]; then
   cat <<EOF
 This starts REAL motion for BOTH UR7e arms.
 Before continuing: clear both workspaces, make E-stops reachable, set both URs
@@ -17,10 +18,11 @@ to Remote Control / running, and verify each pendant's active TCP is its own
 calibrated closed Robotiq fingertip TCP.
 
 Run exactly:
-  $0 --confirm $CONFIRMATION
+  $0 --confirm $CONFIRMATION --task "Describe the task in natural language"
 EOF
   exit 2
 fi
+TASK_DESCRIPTION="$4"
 
 if [[ -n "${CONDA_PREFIX:-}" ]]; then
   echo "ERROR: leave Conda first (conda deactivate), then rerun this script." >&2
@@ -57,10 +59,12 @@ echo "Quest: open http://localhost:8765, connect, then enter VR."
 echo "Left controller -> left UR; right controller -> right UR."
 echo "Hold a controller side-grip to move that arm; each trigger operates its gripper."
 echo "Ctrl-C stops both servo loops and all nodes."
+echo "Task label for every episode in this run: $TASK_DESCRIPTION"
 ros2 launch quest3_robot_data quest3_system.launch.py \
   hardware_config:="$HARDWARE_CONFIG" \
   recorder_config:="$RECORDER_CONFIG" \
   output_dir:="$OUTPUT_DIR" \
+  task_description:="$TASK_DESCRIPTION" \
   front_topic:=/front_camera/camera/color/image_raw &
 SYSTEM_PID=$!
 wait "$SYSTEM_PID"

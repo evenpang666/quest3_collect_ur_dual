@@ -789,6 +789,9 @@ class DatasetRecorder(Node):
             metadata = {
                 "created_utc": datetime.now(timezone.utc).isoformat(),
                 "mode": self.config["mode"],
+                # Fixed for the recorder process, so every episode made by
+                # one teleoperation run has an unambiguous task label.
+                "task_description": self.config["task_description"],
                 "qpos_joint_names": json.dumps(joint_names),
                 "camera_names": json.dumps(self.camera_order),
                 "action_joint_names": json.dumps(joint_names),
@@ -887,12 +890,21 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--config", required=True, type=Path, help="YAML topic and joint-order configuration")
     parser.add_argument("--output-dir", required=True, type=Path, help="directory for episode_XXXXX.hdf5")
     parser.add_argument("--hardware-config", type=Path, help="embed robot/TCP/camera calibration metadata")
+    parser.add_argument(
+        "--task-description",
+        required=True,
+        help="fixed natural-language task label written into every episode of this run",
+    )
     plain_args = remove_ros_args(args=argv)
     args = parser.parse_args(plain_args[1:])
     with args.config.open("r", encoding="utf-8") as config_file:
         config = yaml.safe_load(config_file)
     if not isinstance(config, dict):
         raise ValueError("configuration root must be a YAML mapping")
+    task_description = args.task_description.strip()
+    if not task_description:
+        raise ValueError("--task-description must not be empty")
+    config["task_description"] = task_description
     if args.hardware_config:
         _embed_hardware_metadata(config, args.hardware_config.expanduser().resolve())
 

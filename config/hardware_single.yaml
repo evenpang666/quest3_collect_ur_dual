@@ -11,7 +11,7 @@ cameras:
 arms:
   left_arm:
     role: left
-    robot_ip: CHANGE_ME_LEFT_ROBOT_IP
+    robot_ip: 192.168.124.61
     base_frame: left_base
     tcp_frame: left_tcp
     front_calibration: calibration/left_base_to_front_camera.yaml

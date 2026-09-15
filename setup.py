@@ -28,6 +28,7 @@ setup(
     entry_points={"console_scripts": [
         "record_dataset = quest3_robot_data.recorder:main",
         "webxr_bridge = quest3_robot_data.webxr_bridge:main",
+        "view_front_camera = quest3_robot_data.view_front_camera:main",
         "pose_mapper = quest3_robot_data.pose_mapper:main",
         "rtde_servo = quest3_robot_data.rtde_servo:main",
         "joint_motion_probe = quest3_robot_data.joint_motion_probe:main",

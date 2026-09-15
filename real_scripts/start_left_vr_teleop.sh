@@ -9,8 +9,9 @@ HARDWARE_CONFIG="$PROJECT_DIR/config/hardware_left_teleop.yaml"
 RECORDER_CONFIG="$PROJECT_DIR/config/single_arm_debug.yaml"
 OUTPUT_DIR="$PROJECT_DIR/data/left_vr_episodes"
 CONFIRMATION="MOVE_LEFT_ARM"
+TASK_DESCRIPTION=""
 
-if [[ "${1:-}" != "--confirm" || "${2:-}" != "$CONFIRMATION" ]]; then
+if [[ "${1:-}" != "--confirm" || "${2:-}" != "$CONFIRMATION" || "${3:-}" != "--task" || -z "${4:-}" || $# -ne 4 ]]; then
   cat <<EOF
 This starts REAL left-UR motion via RTDE (slow, position-only commissioning mode).
 Before continuing: clear the workspace, keep the E-stop reachable, set the UR to
@@ -18,10 +19,11 @@ Remote Control / running, and verify the pendant's active TCP is the calibrated
 closed Robotiq fingertip TCP.
 
 Run exactly:
-  $0 --confirm $CONFIRMATION
+  $0 --confirm $CONFIRMATION --task "Describe the task in natural language"
 EOF
   exit 2
 fi
+TASK_DESCRIPTION="$4"
 
 if [[ -n "${CONDA_PREFIX:-}" ]]; then
   echo "ERROR: leave Conda first (conda deactivate), then rerun this script." >&2
@@ -63,11 +65,13 @@ echo "Quest: open http://localhost:8765 in Quest Browser, click connect, then en
 echo "Teleop: LEFT controller only. Hold the side-grip clutch before moving."
 echo "Gripper: left trigger held = slow close; released = slow open (independent of clutch)."
 echo "Recording: use the VR page record button. Ctrl-C stops robot motion and all nodes."
+echo "Task label for every episode in this run: $TASK_DESCRIPTION"
 
 ros2 launch quest3_robot_data quest3_system.launch.py \
   hardware_config:="$HARDWARE_CONFIG" \
   recorder_config:="$RECORDER_CONFIG" \
   output_dir:="$OUTPUT_DIR" \
+  task_description:="$TASK_DESCRIPTION" \
   front_topic:=/front_camera/camera/color/image_raw &
 LAUNCH_PID=$!
 wait "$LAUNCH_PID"

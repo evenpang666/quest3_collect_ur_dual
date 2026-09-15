@@ -4,7 +4,7 @@
 
 | 设备 | 标识 |
 |---|---|
-| 左 UR7e | `192.168.124.58` |
+| 左 UR7e | `192.168.124.61` |
 | 右 UR7e | `192.168.124.60` |
 | 主机有线口 | `192.168.124.59/24`，无网关 |
 | front D455 | `260922305390` |
@@ -58,11 +58,19 @@ for d in rs.context().query_devices():
 PY
 ```
 
+单独预览 front D455 彩色图像（不会启动 ROS 节点或机械臂）：
+
+```bash
+real_scripts/view_front_cam.sh
+```
+
+默认打开配置中的 front 相机 `260922305390`，显示 `1280×720@30`；在图像窗口按 `q` 或 `Esc` 退出。该工具会直接占用相机，因此运行前必须停止 VR 遥操脚本、`realsense_four.launch.py` 或其他正在使用 front D455 的程序。
+
 检查两台机器人网络与 Robotiq URCap socket：
 
 ```bash
-nc -zvw 1 192.168.124.58 30004
-nc -zvw 1 192.168.124.58 63352
+nc -zvw 1 192.168.124.61 30004
+nc -zvw 1 192.168.124.61 63352
 nc -zvw 1 192.168.124.60 30004
 nc -zvw 1 192.168.124.60 63352
 ```
@@ -101,7 +109,7 @@ ros2 run quest3_robot_data calibrate_camera_charuco \
 左臂重标定时仅替换：
 
 ```text
---robot-ip 192.168.124.58
+--robot-ip 192.168.124.61
 --base-frame left_base
 --output .../left_base_to_front_camera.yaml
 ```
@@ -109,10 +117,13 @@ ros2 run quest3_robot_data calibrate_camera_charuco \
 ## 5. 左臂 VR 遥操
 
 ```bash
-real_scripts/start_left_vr_teleop.sh --confirm MOVE_LEFT_ARM
+real_scripts/start_left_vr_teleop.sh --confirm MOVE_LEFT_ARM \
+  --task "将红色积木放入蓝色容器"
 ```
 
 头显中打开 `http://localhost:8765`，点击“连接”→“进入 VR”。左手柄侧握把为左臂位姿离合；按住后先保持静止完成锚定，再移动/旋转手柄。左扳机独立控制左夹爪：按住缓慢合拢，松开缓慢张开。
+
+`--task` 为本次运行固定的自然语言任务描述。每个录制出的 HDF5 都会在根属性 `task_description` 中保存此文本；若任务改变，退出当前脚本后带新文本重新启动。
 
 停止：终端按 `Ctrl-C`。
 
@@ -135,7 +146,8 @@ MOTION GATE: ENABLED
 启动：
 
 ```bash
-real_scripts/start_dual_vr_teleop.sh --confirm MOVE_BOTH_ARMS
+real_scripts/start_dual_vr_teleop.sh --confirm MOVE_BOTH_ARMS \
+  --task "双臂协作将物体放入指定区域"
 ```
 
 - 左手柄侧握把：左臂相对位姿遥操；左扳机：左夹爪。
