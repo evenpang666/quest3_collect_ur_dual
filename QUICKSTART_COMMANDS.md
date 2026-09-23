@@ -58,13 +58,13 @@ for d in rs.context().query_devices():
 PY
 ```
 
-单独预览 front D455 彩色图像（不会启动 ROS 节点或机械臂）：
+单独预览当前接入主机的全部 RealSense RGB 图像（不会启动 ROS 节点或机械臂）：
 
 ```bash
 real_scripts/view_front_cam.sh
 ```
 
-默认打开配置中的 front 相机 `260922305390`，显示 `1280×720@30`；在图像窗口按 `q` 或 `Esc` 退出。该工具会直接占用相机，因此运行前必须停止 VR 遥操脚本、`realsense_four.launch.py` 或其他正在使用 front D455 的程序。
+默认枚举并打开所有当前连接的 RealSense（包括 front/side D455 与腕部 D435i），以网格显示 `640×480@30` RGB；在图像窗口按 `q` 或 `Esc` 退出。该工具会直接占用相机，因此运行前必须停止 VR 遥操脚本、`realsense_four.launch.py` 或其他正在使用这些相机的程序。若只需检查某一台，可追加 `--serial 260922305390`。
 
 检查两台机器人网络与 Robotiq URCap socket：
 
