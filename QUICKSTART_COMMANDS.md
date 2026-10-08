@@ -121,7 +121,7 @@ real_scripts/start_left_vr_teleop.sh --confirm MOVE_LEFT_ARM \
   --task "将红色积木放入蓝色容器"
 ```
 
-头显中打开 `http://localhost:8765`，点击“连接”→“进入 VR”。左手柄侧握把为左臂位姿离合；按住后先保持静止完成锚定，再移动/旋转手柄。左扳机独立控制左夹爪：按住缓慢合拢，松开缓慢张开。
+头显中打开 `http://localhost:8765`，点击“连接”→“进入现实透视”。左手柄侧握把为左臂位姿离合；按住后先保持静止完成锚定，再移动/旋转手柄。左扳机独立控制左夹爪：按住缓慢合拢，松开缓慢张开。
 
 `--task` 为本次运行固定的自然语言任务描述。每个录制出的 HDF5 都会在根属性 `task_description` 中保存此文本；若任务改变，退出当前脚本后带新文本重新启动。
 
@@ -159,7 +159,9 @@ real_scripts/start_dual_vr_teleop.sh --confirm MOVE_BOTH_ARMS \
 
 当前未接 side D455，双臂 episode 保存 front RGB-D、左右腕 RGB、双臂关节状态、commanded action 和夹爪状态/命令；side 相机视频会在导出时生成全黑占位。
 
-Quest VR 中央保持 front D455 的原始主视角；左、右两侧分别显示 left/right wrist RGB（未连接的一侧为黑屏）。front 预览为 `1280×720@30` 源图、目标 `15 FPS` 传输，两个腕部预览目标各 `10 FPS`，以优先保证遥操主视角稳定。D455 深度为 `640×480@30`；录制器仍将 front RGB 与深度写入 `640×480` HDF5 数据格式，腕部数据不变。
+Quest 头显使用 WebXR `immersive-ar` 现实透视：背景透明，可看到真实工作场景；视野上方保留随头部移动的录制状态、计时、Y/B 操作提示和录制中断原因。front / left wrist / right wrist 三路相机画面暂不显示，头显页面不再请求预览 JPEG。相机采集与 episode 保存不受影响：front RGB 源图为 `1280×720@30`，深度为 `640×480@30`；录制器仍将 front RGB 与深度写入 `640×480` HDF5 数据格式，腕部数据不变。
+
+需在 Quest Browser 中通过 `http://localhost:8765`（ADB 转发）或 HTTPS 打开，并允许进入沉浸式会话。若浏览器不支持现实透视，页面会显示错误提示。更新代码后按第 1 节重建并重启遥操脚本，退出旧会话、刷新头显页面；页面版本应为 `passthrough-v2`。
 
 导出视频默认每个已保存的同步样本写一帧、固定 `30 FPS`；若录制期间同步采样掉帧，视频会更短而不会插入重复帧。覆盖已有导出视频时追加 `--overwrite`。
 
@@ -257,7 +259,7 @@ ros2 topic hz /right_arm/joint_states
 ros2 topic echo /right_arm/gripper_command
 ```
 
-若 Quest 页面黑屏：退出沉浸式会话、关闭旧浏览器标签，确认脚本日志中有 `front_camera.camera: RealSense Node Is Up!`，再在 Quest Browser 打开 `http://localhost:8765`。
+若 Quest 现实透视未显示：退出沉浸式会话、刷新头显页面，确认页面版本为 `passthrough-v2`，在 Quest Browser 中重新点击“连接”→“进入现实透视”并允许进入会话；检查页面错误提示和 Quest Browser / 系统版本。现实背景由 Quest 自身透视提供，不依赖 RealSense 预览。
 
 若预检提示 `cannot check Quest ADB ... timed out`：这通常是首次启动 ADB daemon 超过旧的 3 秒窗口。当前版本已改为先启动 daemon 并等待最多 12 秒。仍失败时，退出所有头显上的 USB 调试授权提示后，在主机执行：
 
@@ -271,7 +273,7 @@ adb devices -l
 
 当前遥操配置不设置软件 Cartesian 工作空间；实际运动边界由 UR 控制柜中的安全平面、关节限制、速度限制及急停负责。若任一臂不动，先查看系统状态和示教器的安全/保护停机提示。
 
-发生保护停机或急停后，若当前正在录制，系统会立即停止并保存该 episode；front 画面会显示橙色“录制已安全中断并保存”及原因。先在示教器解除故障并重新使能机械臂。运行中的遥操程序会每秒自动尝试重建 RTDE 连接；状态显示 `reconnected; release and re-press clutch` 后，必须先松开再重新按住对应手柄侧握把，才会建立新的相对位姿锚点并允许该臂运动。恢复运动后请用 Y/B 或网页按钮开始一个新的 episode，勿继续使用被中断的录制。
+发生保护停机或急停后，若当前正在录制，系统会立即停止并保存该 episode；头显录制提示面板会显示橙色“录制已安全中断并保存”及原因。先在示教器解除故障并重新使能机械臂。运行中的遥操程序会每秒自动尝试重建 RTDE 连接；状态显示 `reconnected; release and re-press clutch` 后，必须先松开再重新按住对应手柄侧握把，才会建立新的相对位姿锚点并允许该臂运动。恢复运动后请用 Y/B 或网页按钮开始一个新的 episode，勿继续使用被中断的录制。
 
 ## 9. 紧急停止
 

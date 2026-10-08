@@ -1,6 +1,6 @@
 # Quest 3 + 双 UR7e 实体遥操作与数据采集
 
-本项目使用 Quest Browser 的 WebXR 获取左右手柄位姿，通过 USB `adb reverse` 连接主机；front D455 的俯视 RGB 是头显中的主视角。左手柄固定控制左 UR7e，右手柄固定控制右 UR7e。手柄只提供相对于按下握把时的 6DoF 位姿偏移，笛卡尔目标通过 RTDE `servoL` 发送，由每台 UR 控制器内部完成 IK。
+本项目使用 Quest Browser 的 WebXR 获取左右手柄位姿，通过 USB `adb reverse` 连接主机；头显通过 WebXR `immersive-ar` 显示现实透视，仅叠加录制文字提示，暂不显示三路相机画面；RealSense 图像仍正常采集和保存。左手柄固定控制左 UR7e，右手柄固定控制右 UR7e。手柄只提供相对于按下握把时的 6DoF 位姿偏移，笛卡尔目标通过 RTDE `servoL` 发送，由每台 UR 控制器内部完成 IK。
 
 默认配置支持双臂；`hardware_single.yaml + single_arm.yaml` 支持只启动左臂。
 
@@ -146,12 +146,13 @@ ros2 launch quest3_robot_data quest3_system.launch.py \
   output_dir:=/data/quest3_ur7e
 ```
 
-在 Quest Browser 打开 `http://localhost:8765`，连接并进入 VR。头显内显示 front_cam 俯视画面。确认：
+在 Quest Browser 打开 `http://localhost:8765`，点击“连接”→“进入现实透视”。头显内应能看到真实场景，上方显示录制状态与操作提示（页面版本 `passthrough-v2`）。需使用支持 `immersive-ar` 的 Quest Browser；若不支持，页面会提示错误。确认：
 
 - 左手柄状态只对应 `left_arm`，右手柄只对应 `right_arm`；
 - 按住握把时建立锚点，第一帧不会跳动；
 - 松开握把或拔掉 USB 后状态立即变成 stopped；
-- front 画面的右、上、前与手柄操作方向一致。
+- 现实透视可见，Y/B 能切换录制，提示面板计时与中断原因正常显示；
+- 在小幅移动手柄时，实际机械臂方向与预期一致。
 
 如果方向不对，不要用代码符号硬凑；检查相机光学坐标系命名和 front 外参。
 

@@ -9,9 +9,9 @@ button{font-size:1rem;padding:.75rem 1rem;margin:.3rem}.danger{background:#9d263
 </style>
 <main>
   <h1>Quest 3 → UR7e 双臂遥操作</h1>
-  <p class="hint">页面版本：orientation-v2</p>
+  <p class="hint">页面版本：passthrough-v2（现实透视 + 录制提示）</p>
   <p class="hint">左手柄→左臂，右手柄→右臂。按住侧握把才移动对应机械臂；扳机独立控制对应夹爪：按住缓慢合拢，松开缓慢张开。左手 Y 或右手 B 键切换录制，左右摇杆按下分别重新锚定。</p>
-  <button id="connect">连接</button><button id="enter" disabled>进入 VR</button>
+  <button id="connect">连接</button><button id="enter" disabled>进入现实透视</button>
   <button id="record" class="danger" disabled>开始录制</button>
   <button id="recenterLeft" disabled>左臂重新锚定</button><button id="recenterRight" disabled>右臂重新锚定</button>
   <div id="status">等待连接…</div>
@@ -19,8 +19,7 @@ button{font-size:1rem;padding:.75rem 1rem;margin:.3rem}.danger{background:#9d263
 <script>
 (()=>{
 const $=id=>document.getElementById(id), status=$('status'), connect=$('connect'), enter=$('enter'), record=$('record');
-let ws,session,space,gl,layer,renderer,lastSent=0,recording=false,recordingStartMs=null,recordingInterrupted='',previewCanvas=null,previewContext=null;
-const imageStreams={front:{last:0,pending:false},left_wrist:{last:0,pending:false},right_wrist:{last:0,pending:false}};
+let ws,session,space,gl,layer,renderer,lastSent=0,recording=false,recordingStartMs=null,recordingInterrupted='';
 let recenterLeft=false,recenterRight=false,lastRecordLeft=false,lastRecordRight=false;
 const set=t=>status.textContent=t;
 function recordingElapsed(){return recording&&recordingStartMs!==null?(performance.now()-recordingStartMs)/1000:0}
@@ -37,8 +36,8 @@ function setRecording(value){applyRecordingState(value,undefined,value?null:unde
 function connectWs(){
   if(ws?.readyState===WebSocket.OPEN)return;
   ws=new WebSocket(`${location.protocol==='https:'?'wss':'ws'}://${location.host}/ws`);
-  ws.onopen=()=>{connect.disabled=true;enter.disabled=false;record.disabled=false;set('服务器已连接；进入 VR 后先小幅验证左右臂映射。')};
-  ws.onclose=()=>{connect.disabled=false;enter.disabled=true;record.disabled=true;recording=false;set('连接断开：录制已停止，机械臂 watchdog 将停止运动。')};
+  ws.onopen=()=>{connect.disabled=true;enter.disabled=false;record.disabled=false;set('服务器已连接；进入现实透视后先小幅验证左右臂映射。')};
+  ws.onclose=()=>{connect.disabled=false;enter.disabled=true;record.disabled=true;applyRecordingState(false,undefined,'连接断开：录制已停止');set('连接断开：录制已停止，机械臂 watchdog 将停止运动。')};
   ws.onmessage=e=>{const d=JSON.parse(e.data);if(d.type==='status'){applyRecordingState(d.recording,d.recording_elapsed_sec,d.recording_interrupted);const interrupt=recordingInterrupted?`\n⚠ 录制中断: ${recordingInterrupted}`:'';set(`VR连接: 是\n录制: ${recording?'进行中':'未录制'} ${recording?formatDuration(recordingElapsed()):''}${interrupt}\n同步帧: ${d.synced_frames??'-'}\n丢帧: ${d.dropped_frames??'-'}\n左臂: ${d.left_arm??'等待'} / ${d.left_arm_rtde??'RTDE等待'}\n左夹爪: ${d.left_arm_gripper??'等待'}\n右臂: ${d.right_arm??'等待'} / ${d.right_arm_rtde??'RTDE等待'}\n右夹爪: ${d.right_arm_gripper??'未连接'}\n双臂距离保护: ${d.dual_tcp_guard??'-'}`)}};
 }
 function shader(type,source){const s=gl.createShader(type);gl.shaderSource(s,source);gl.compileShader(s);if(!gl.getShaderParameter(s,gl.COMPILE_STATUS))throw Error(gl.getShaderInfoLog(s));return s}
@@ -46,7 +45,7 @@ function program(v,f){const p=gl.createProgram();gl.attachShader(p,shader(gl.VER
 function makeRenderer(){
  const p=program('attribute vec3 p;attribute vec2 u;uniform mat4 m;varying vec2 v;void main(){v=u;gl_Position=m*vec4(p,1.);}','precision mediump float;uniform sampler2D t;varying vec2 v;void main(){gl_FragColor=texture2D(t,v);}');
  function panel(left,bottom,right,top,blank){
-  // DOM image sources use a top-left origin; all camera views use this same UV layout.
+  // Canvas textures use a top-left origin.
   const verts=new Float32Array([left,bottom,-1.6,0,1,right,bottom,-1.6,1,1,right,top,-1.6,1,0,left,bottom,-1.6,0,1,right,top,-1.6,1,0,left,top,-1.6,0,0]);
   const b=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,b);gl.bufferData(gl.ARRAY_BUFFER,verts,gl.STATIC_DRAW);
   const t=gl.createTexture();gl.bindTexture(gl.TEXTURE_2D,t);gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,1,1,0,gl.RGBA,gl.UNSIGNED_BYTE,new Uint8Array(blank));
@@ -56,36 +55,48 @@ function makeRenderer(){
  }
  return {
   p,a:gl.getAttribLocation(p,'p'),u:gl.getAttribLocation(p,'u'),m:gl.getUniformLocation(p,'m'),
-  // The front panel is unchanged. Smaller wrist panels flank it.
-  panels:{
-   front:panel(-1,.65,1,1.775,[15,25,40,255]),
-   left_wrist:panel(-2.08,.93,-1.08,1.492,[0,0,0,255]),
-   right_wrist:panel(1.08,.93,2.08,1.492,[0,0,0,255]),
-  },
+  // A head-following HUD stays in the upper view, close enough to center to read.
+  hud:panel(-.72,.12,.72,.36,[0,0,0,0]),
+  canvas:Object.assign(document.createElement('canvas'),{width:1440,height:240}),
+  labelKey:null,
  };
 }
 function mul(a,b){const o=new Float32Array(16);for(let c=0;c<4;c++)for(let r=0;r<4;r++)o[c*4+r]=a[r]*b[c*4]+a[4+r]*b[c*4+1]+a[8+r]*b[c*4+2]+a[12+r]*b[c*4+3];return o}
-function updatePreviewTexture(bitmap){
- const width=bitmap.width,height=bitmap.height;
- if(!previewCanvas||previewCanvas.width!==width||previewCanvas.height!==height){previewCanvas=document.createElement('canvas');previewCanvas.width=width;previewCanvas.height=height;previewContext=previewCanvas.getContext('2d')}
- previewContext.drawImage(bitmap,0,0,width,height);
- const fontSize=Math.max(20,Math.round(width*.030)),pad=Math.round(fontSize*.55);
- const label=recordingInterrupted?`⚠ ${recordingInterrupted}`:(recording?`● 正在录制 ${formatDuration(recordingElapsed())}  |  按 Y / B 停止并保存`:'未录制  |  按左手 Y 或右手 B 开始录制');
- previewContext.font=`700 ${fontSize}px sans-serif`;const textWidth=previewContext.measureText(label).width;
- previewContext.fillStyle=recordingInterrupted?'rgba(195,105,0,.92)':(recording?'rgba(180,20,35,.88)':'rgba(10,18,32,.78)');previewContext.fillRect(pad,pad,textWidth+pad*2,fontSize+pad*2);
- previewContext.fillStyle='#fff';previewContext.fillText(label,pad*2,pad*2+fontSize*.80);
- gl.bindTexture(gl.TEXTURE_2D,renderer.panels.front.t);gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL,false);gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,previewCanvas);
+function updateRecordingHud(){
+ const label=recordingInterrupted?'⚠ 录制已中断':(recording?`● 正在录制 ${formatDuration(recordingElapsed())}`:'未录制');
+ const hint=recordingInterrupted||'按左手 Y / 右手 B '+(recording?'停止并保存':'开始录制');
+ const key=label+'\n'+hint;if(renderer.labelKey===key)return;renderer.labelKey=key;
+ const canvas=renderer.canvas,ctx=canvas.getContext('2d');
+ ctx.clearRect(0,0,canvas.width,canvas.height);
+ ctx.fillStyle=recordingInterrupted?'rgba(150,80,0,.92)':(recording?'rgba(150,15,30,.88)':'rgba(10,18,32,.78)');
+ ctx.fillRect(0,0,canvas.width,canvas.height);
+ ctx.fillStyle='#fff';ctx.font='700 48px sans-serif';ctx.fillText(label,32,64);
+ ctx.font='36px sans-serif';
+ // Wrap interruption reasons instead of clipping them off the HUD.
+ let line='',y=128;
+ for(const char of hint){if(ctx.measureText(line+char).width>canvas.width-64){ctx.fillText(line,32,y);line='';y+=48}line+=char}
+ ctx.fillText(line,32,y);
+ gl.bindTexture(gl.TEXTURE_2D,renderer.hud.t);gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL,false);
+ gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL,true);
+ gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,canvas);
 }
-function updateWristTexture(camera,bitmap){gl.bindTexture(gl.TEXTURE_2D,renderer.panels[camera].t);gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL,false);gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,bitmap)}
-async function updateImage(camera,now){
- const stream=imageStreams[camera],period=camera==='front'?66:100;
- if(stream.pending||now-stream.last<period)return;stream.pending=true;stream.last=now;
- try{const r=await fetch('/'+camera+'.jpg?t='+Math.floor(now),{cache:'no-store'});if(!r.ok)return;const bm=await createImageBitmap(await r.blob());if(camera==='front')updatePreviewTexture(bm);else updateWristTexture(camera,bm);bm.close()}catch(_){}finally{stream.pending=false}
+function render(frame){
+ const viewer=frame.getViewerPose(space);if(!viewer)return;
+ updateRecordingHud();gl.bindFramebuffer(gl.FRAMEBUFFER,layer.framebuffer);
+ // Zero alpha lets the XR compositor show Quest's real-world passthrough.
+ gl.clearColor(0,0,0,0);gl.clear(gl.COLOR_BUFFER_BIT);gl.useProgram(renderer.p);
+ gl.bindTexture(gl.TEXTURE_2D,renderer.hud.t);gl.bindBuffer(gl.ARRAY_BUFFER,renderer.hud.b);
+ gl.enableVertexAttribArray(renderer.a);gl.vertexAttribPointer(renderer.a,3,gl.FLOAT,false,20,0);
+ gl.enableVertexAttribArray(renderer.u);gl.vertexAttribPointer(renderer.u,2,gl.FLOAT,false,20,12);
+ for(const view of viewer.views){
+  const vp=layer.getViewport(view);gl.viewport(vp.x,vp.y,vp.width,vp.height);
+  // Place the HUD relative to the viewer, with the proper offset for each eye.
+  gl.uniformMatrix4fv(renderer.m,false,mul(view.projectionMatrix,mul(view.transform.inverse.matrix,viewer.transform.matrix)));
+  gl.drawArrays(gl.TRIANGLES,0,6);
+ }
 }
-function updateImages(now){for(const camera of Object.keys(imageStreams))updateImage(camera,now)}
-function render(frame){const viewer=frame.getViewerPose(space);if(!viewer)return;gl.bindFramebuffer(gl.FRAMEBUFFER,layer.framebuffer);gl.clearColor(.02,.04,.08,1);gl.clear(gl.COLOR_BUFFER_BIT);for(const view of viewer.views){const vp=layer.getViewport(view);gl.viewport(vp.x,vp.y,vp.width,vp.height);gl.useProgram(renderer.p);for(const panel of Object.values(renderer.panels)){gl.bindTexture(gl.TEXTURE_2D,panel.t);gl.bindBuffer(gl.ARRAY_BUFFER,panel.b);gl.enableVertexAttribArray(renderer.a);gl.vertexAttribPointer(renderer.a,3,gl.FLOAT,false,20,0);gl.enableVertexAttribArray(renderer.u);gl.vertexAttribPointer(renderer.u,2,gl.FLOAT,false,20,12);gl.uniformMatrix4fv(renderer.m,false,mul(view.projectionMatrix,view.transform.inverse.matrix));gl.drawArrays(gl.TRIANGLES,0,6)}}}
 function onFrame(now,frame){
- session.requestAnimationFrame(onFrame);updateImages(now);render(frame);
+ session.requestAnimationFrame(onFrame);render(frame);
  const sources=[...session.inputSources],l=controller(sources.find(s=>s.handedness==='left'),frame),r=controller(sources.find(s=>s.handedness==='right'),frame);
  if(l?.thumbstick>.5)recenterLeft=true;if(r?.thumbstick>.5)recenterRight=true;
  // Quest Touch's upper face buttons are Y (left) and B (right).  Toggle only
@@ -96,12 +107,32 @@ function onFrame(now,frame){
  if(now-lastSent>=1000/90){send({type:'pose',left:l,right:r,recenter_left:recenterLeft,recenter_right:recenterRight,xr_time_ms:now});recenterLeft=false;recenterRight=false;lastSent=now}
 }
 async function startVr(){
+ if(session)return;
  if(!navigator.xr){set('当前浏览器没有 WebXR；请在 Quest Browser 中通过 localhost/HTTPS 打开。');return}
- try{session=await navigator.xr.requestSession('immersive-vr',{requiredFeatures:['local-floor']});const canvas=document.createElement('canvas');gl=canvas.getContext('webgl',{xrCompatible:true});await gl.makeXRCompatible();layer=new XRWebGLLayer(session,gl);session.updateRenderState({baseLayer:layer});space=await session.requestReferenceSpace('local-floor');renderer=makeRenderer();session.addEventListener('end',()=>{send({type:'pose',left:null,right:null});setRecording(false);session=null});session.requestAnimationFrame(onFrame)}catch(e){set(`无法进入 VR: ${e.message}`)}
+ enter.disabled=true;
+ try{
+  session=await navigator.xr.requestSession('immersive-ar',{requiredFeatures:['local-floor']});
+  session.addEventListener('end',()=>{
+   send({type:'pose',left:null,right:null});setRecording(false);session=null;
+   enter.disabled=ws?.readyState!==WebSocket.OPEN;
+   $('recenterLeft').disabled=true;$('recenterRight').disabled=true;
+  });
+  if(session.environmentBlendMode!=='alpha-blend')throw Error('当前会话不支持透明现实透视，请检查 Quest Browser 与系统版本');
+  const canvas=document.createElement('canvas');gl=canvas.getContext('webgl',{xrCompatible:true,alpha:true,premultipliedAlpha:true});
+  if(!gl)throw Error('无法创建 WebGL 渲染上下文');
+  await gl.makeXRCompatible();layer=new XRWebGLLayer(session,gl,{alpha:true});
+  session.updateRenderState({baseLayer:layer});space=await session.requestReferenceSpace('local-floor');
+  renderer=makeRenderer();lastRecordLeft=false;lastRecordRight=false;
+  $('recenterLeft').disabled=false;$('recenterRight').disabled=false;
+  session.requestAnimationFrame(onFrame);
+ }catch(e){
+  if(session)await session.end();
+  enter.disabled=ws?.readyState!==WebSocket.OPEN;
+  set(`无法进入现实透视: ${e.message}。请使用支持 immersive-ar 的 Quest Browser，并允许进入沉浸式会话。`);
+ }
 }
 connect.onclick=connectWs;enter.onclick=startVr;record.onclick=()=>setRecording(!recording);
 $('recenterLeft').onclick=()=>recenterLeft=true;$('recenterRight').onclick=()=>recenterRight=true;
-enter.addEventListener('click',()=>{$('recenterLeft').disabled=false;$('recenterRight').disabled=false});
 set(location.hostname==='localhost'||location.protocol==='https:'?'点击“连接”。':'WebXR 需要 HTTPS，或使用 adb reverse 后访问 localhost。');
 })();
 </script>

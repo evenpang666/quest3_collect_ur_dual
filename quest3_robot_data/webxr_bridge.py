@@ -1,4 +1,4 @@
-"""Quest Browser WebXR/WebSocket bridge with front and wrist-camera feedback."""
+"""Quest Browser passthrough WebXR/WebSocket bridge with camera snapshot endpoints."""
 from __future__ import annotations
 
 import argparse
