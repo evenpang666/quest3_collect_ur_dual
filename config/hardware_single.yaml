@@ -6,8 +6,8 @@ controller_timeout_sec: 0.25
 min_tcp_separation_m: 0.20
 cameras:
   left_wrist: {model: D435i, serial: CHANGE_ME_LEFT_WRIST_SERIAL}
-  front: {model: D455, serial: CHANGE_ME_FRONT_SERIAL}
-  side: {model: D455, serial: CHANGE_ME_SIDE_SERIAL}
+  front: {model: D455, serial: "260922305390"}
+  side: {model: D455, serial: "260922303231"}
 arms:
   left_arm:
     role: left

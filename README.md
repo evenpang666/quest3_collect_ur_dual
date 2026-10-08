@@ -82,33 +82,33 @@ ros2 run quest3_robot_data calibrate_tcp \
 
 右臂重复执行并输出 `right_tcp.yaml`。只有 RMS 误差通过时文件才会标记 `calibrated: true`。随后将 `tcp_offset_xyz_rotvec` 填入对应 UR Installation 的 TCP 设置并设为活动 TCP。
 
-## 4. front/side 相机外参标定
+## 4. 双臂 front/side ChArUco 相机外参标定
 
-将一个已知尺寸的 4×4 ArUco 标记刚性安装到已标定 TCP。测量 TCP 到标记坐标系的变换，复制并修改 [tcp_to_aruco_example.yaml](config/calibration/tcp_to_aruco_example.yaml)。不可在没有测量的情况下使用示例中的单位矩阵。
-
-标定时，对应 Realsense 不能同时被 ROS 相机节点占用。以左臂和 front_cam 为例：
+现场流程使用固定在桌面的 ChArUco 板，按**先左臂、再右臂**的顺序标定。每个臂先采集 front/side 两台相机，再用该臂的活动 TCP 触碰四个共同可见内角，分别求解两份 base-to-camera 外参。无需将标记刚性安装在 TCP 上。
 
 ```bash
-ros2 run quest3_robot_data calibrate_camera \
-  --robot-ip 192.168.1.10 \
-  --camera-serial FRONT_D455_SERIAL \
-  --base-frame left_base \
-  --camera-frame front_camera_color_optical_frame \
-  --tcp-to-tag /home/mypc/Documents/pyw/projects/quest3_collect/config/calibration/tcp_to_aruco.yaml \
-  --marker-id 0 --marker-size-m 0.080 --samples 20 \
-  --output /home/mypc/Documents/pyw/projects/quest3_collect/config/calibration/left_base_to_front_camera.yaml
+ros2 run quest3_robot_data calibrate_dual_camera_charuco \
+  --config /home/mypc/Documents/pyw/projects/quest3_collect/config/hardware_dual_teleop.yaml \
+  --squares-x 10 --squares-y 7 \
+  --square-size-m 0.037 --marker-size-m 0.027 \
+  --dictionary DICT_5X5_100 \
+  --camera-samples 30 --max-touch-rms-mm 2.5
 ```
 
-在窗口中让标记覆盖不同位置和角度，检测稳定时按空格，`q` 取消。按同样方法得到：
+front D455 为 `260922305390`，side D455 为 `260922303231`。板参数必须与实物一致。停止所有占用相机的节点后运行；每个相机窗口稳定时按空格，按标注的点 ID 触碰并回车，最后移开机械臂并回车检查两台相机中的板位移。
+
+**左臂的两份外参均通过后允许移动标定板**，重新固定在右臂可达、两台相机均可见的位置。右臂独立重新采集板观测及 TCP 触点。每个臂内部，从拍摄第一台相机到最终位移检查结束，板必须固定；相机和机器人底座始终保持固定。
+
+左右臂的四点独立选择，允许不同点 ID 和不同板位置，不要求两臂工作空间重叠。可分两次运行：先追加 `--arm left` 完成左臂，再移动板并追加 `--arm right` 完成右臂。两臂都通过后，程序才利用固定相机换算基座关系：`left_T_right = left_T_camera × inverse(right_T_camera)`。通过 front/side 两条路径及两臂相机相对位姿的一致性检查后，生成 `dual_arm_camera_transforms.yaml`，含左右基座和 front/side 相机之间的变换。默认一致性阈值为 `10 mm / 3°`，汇总未通过或来源外参改变时，预检会阻止双臂启动。
 
 | 机器人 | 相机 | 输出文件 |
 |---|---|---|
 | left_arm | front | `left_base_to_front_camera.yaml` |
-| right_arm | front | `right_base_to_front_camera.yaml` |
 | left_arm | side | `left_base_to_side_camera.yaml` |
+| right_arm | front | `right_base_to_front_camera.yaml` |
 | right_arm | side | `right_base_to_side_camera.yaml` |
 
-front 外参用于将 WebXR 偏移映射到每个 UR base；side 外参随 episode 保存，用于后续三维数据处理。移动架台、相机、机械臂底座或 TCP 后必须重新标定。
+四份外参和换算汇总均须为 `calibrated: true`。front 外参用于将 WebXR 偏移映射到各 UR base；side 外参随 episode 保存，用于三维数据处理。移动相机、机械臂底座或改变 TCP 后必须重新标定。独立标定、断点续做及重做已通过结果的方法见 [快速启动第 4 节](QUICKSTART_COMMANDS.md#4-双臂双相机-charuco-外参标定先左臂再右臂)。原有单臂单相机 `calibrate_camera_charuco` 和 TCP 刚性 ArUco `calibrate_camera` 命令继续保留。
 
 ## 5. 启动四台相机
 
@@ -137,7 +137,7 @@ ros2 run quest3_robot_data preflight \
   --config /home/mypc/Documents/pyw/projects/quest3_collect/config/hardware.yaml
 ```
 
-预检会只读检查：左右角色、六份标定、四个序列号、两台机器人 RTDE 连接和 Quest ADB。全部通过后，以 `enable_motion:false` 启动完整系统：
+预检会只读检查：左右角色、每个已配置场景相机对应的外参、TCP 来源、四个序列号、两台机器人 RTDE 连接和 Quest ADB。使用 `robot_active_tcp` 的现场配置无需额外 TCP YAML。全部通过后，以 `enable_motion:false` 启动完整系统：
 
 ```bash
 ros2 launch quest3_robot_data quest3_system.launch.py \

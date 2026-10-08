@@ -1,0 +1,145 @@
+calibrated: true
+created_utc: '2026-10-08T11:46:55.274213+00:00'
+method: independent arm/board sessions linked through fixed front/side cameras
+transform_convention: parent_T_child maps child coordinates into parent coordinates
+left_base_to_right_base:
+  parent_frame: left_base
+  child_frame: right_base
+  translation:
+  - -0.003286395930771374
+  - 0.31390874829254367
+  - -0.30077429632003183
+  quaternion_xyzw:
+  - 0.007047228178792635
+  - 0.7021476663514749
+  - 0.7119757524934431
+  - 0.00543314582626331
+  matrix:
+  - - -0.9998416350028527
+    - 0.0021598534638503425
+    - 0.017664652496893838
+    - -0.003286395930771374
+  - - 0.01763292581609206
+    - -0.013918271127217219
+    - 0.9997476489874797
+    - 0.31390874829254367
+  - - 0.0024051698454616898
+    - 0.9999008034609451
+    - 0.013877982424348567
+    - -0.30077429632003183
+  - - 0.0
+    - 0.0
+    - 0.0
+    - 1.0
+front_camera_to_side_camera:
+  parent_frame: front_camera_color_optical_frame
+  child_frame: side_camera_color_optical_frame
+  translation:
+  - 0.9402244774205306
+  - -0.41091798749513125
+  - 0.5930902159723381
+  quaternion_xyzw:
+  - 0.06873145225122647
+  - -0.5416828392427033
+  - -0.4539444191198807
+  - 0.704123677695414
+  matrix:
+  - - 0.0010283320397553863
+    - 0.5648047313185601
+    - -0.8252239441590293
+    - 0.9402244774205306
+  - - -0.7137273241214347
+    - 0.5784209036427028
+    - 0.39499691774951284
+    - -0.41091798749513125
+  - - 0.700422907489234
+    - 0.588578689479434
+    - 0.403711378282802
+    - 0.5930902159723381
+  - - 0.0
+    - 0.0
+    - 0.0
+    - 1.0
+left_base_to_right_base_via_front:
+  parent_frame: left_base
+  child_frame: right_base
+  translation:
+  - -0.0034368324053917765
+  - 0.3139056581543272
+  - -0.30075949444822453
+  quaternion_xyzw:
+  - 0.007127311951550925
+  - 0.702172056526017
+  - 0.711951053694927
+  - 0.005413095330077933
+  matrix:
+  - - -0.9998397996465852
+    - 0.002301480733045813
+    - 0.01775044306802276
+    - -0.0034368324053917765
+  - - 0.017716916429046103
+    - -0.01385020286594374
+    - 0.9997471093995813
+    - 0.3139056581543272
+  - - 0.00254674594765375
+    - 0.9999014326757452
+    - 0.013807208916738561
+    - -0.30075949444822453
+  - - 0.0
+    - 0.0
+    - 0.0
+    - 1.0
+left_base_to_right_base_via_side:
+  parent_frame: left_base
+  child_frame: right_base
+  translation:
+  - -0.003135959456150972
+  - 0.3139118384307602
+  - -0.30078909819183913
+  quaternion_xyzw:
+  - 0.00696714434951314
+  - 0.7021232705454665
+  - 0.7120004455816686
+  - 0.005453196278872982
+  matrix:
+  - - -0.9998434430999138
+    - 0.002018231993280769
+    - 0.01757885177506779
+    - -0.003135959456150972
+  - - 0.017548944714888208
+    - -0.013986351217763315
+    - 0.9997481765519792
+    - 0.3139118384307602
+  - - 0.002263587750072845
+    - 0.9999001493745429
+    - 0.013948743716300921
+    - -0.30078909819183913
+  - - 0.0
+    - 0.0
+    - 0.0
+    - 1.0
+consistency:
+  base_via_front_vs_side:
+    translation_error_mm: 0.3023890028384753
+    rotation_error_deg: 0.02052480941206137
+    passed: true
+  cameras_via_left_vs_right:
+    translation_error_mm: 0.48212499258709557
+    rotation_error_deg: 0.020524809198974044
+    passed: true
+quality_limits:
+  max_translation_mm: 10.0
+  max_rotation_deg: 3.0
+source_calibrations:
+  left/front:
+    path: /home/mypc/Documents/pyw/projects/quest3_collect/config/calibration/left_base_to_front_camera.yaml
+    sha256: 60dd815fbe0c7202b5cc9c26dbe35b74356b0a9fc5623f826e5f65eafb21b150
+  left/side:
+    path: /home/mypc/Documents/pyw/projects/quest3_collect/config/calibration/left_base_to_side_camera.yaml
+    sha256: 23616102611e15bcf53e48d76cb8916e45061ef0013ccf3de3aa65d67198840a
+  right/front:
+    path: /home/mypc/Documents/pyw/projects/quest3_collect/config/calibration/right_base_to_front_camera.yaml
+    sha256: 95eb09133530697426521020c4dfbbf8cdfe63dc5140700c4f6973abeae17033
+  right/side:
+    path: /home/mypc/Documents/pyw/projects/quest3_collect/config/calibration/right_base_to_side_camera.yaml
+    sha256: 3a895b66f900f1f45317a56cb781fdbc4b64f98f71670e74a0463af2a5955a57

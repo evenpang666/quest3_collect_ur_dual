@@ -1,6 +1,0 @@
-# Measure this rigid transform for your calibration fixture. Never use this
-# identity example unless the tag origin/axes physically coincide with the TCP.
-parent_frame: tcp
-child_frame: aruco_tag
-translation: [0.0, 0.0, 0.0]
-quaternion_xyzw: [0.0, 0.0, 0.0, 1.0]

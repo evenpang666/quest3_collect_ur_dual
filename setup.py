@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from setuptools import find_packages, setup
 
 package_name = "quest3_robot_data"
@@ -19,7 +21,10 @@ setup(
             "config/single_arm_debug.yaml",
             "config/dual_arm_front_only.yaml",
         ]),
-        (f"share/{package_name}/config/calibration", ["config/calibration/README.md", "config/calibration/tcp_to_aruco_example.yaml"]),
+        (f"share/{package_name}/config/calibration", [
+            str(path) for pattern in ("*.md", "*example.yaml")
+            for path in Path("config/calibration").glob(pattern) if path.is_file()
+        ]),
         (f"share/{package_name}/launch", ["launch/quest3_system.launch.py", "launch/realsense_four.launch.py"]),
     ],
     install_requires=["setuptools", "numpy", "PyYAML", "h5py", "aiohttp"],
@@ -36,6 +41,7 @@ setup(
         "calibrate_tcp = quest3_robot_data.calibrate_tcp:main",
         "calibrate_camera = quest3_robot_data.calibrate_camera:main",
         "calibrate_camera_charuco = quest3_robot_data.calibrate_camera_charuco:main",
+        "calibrate_dual_camera_charuco = quest3_robot_data.calibrate_dual_camera_charuco:main",
         "preflight = quest3_robot_data.preflight:main",
         "inspect_episode = scripts.inspect_episode:main",
         "export_episode_videos = scripts.export_episode_videos:main",

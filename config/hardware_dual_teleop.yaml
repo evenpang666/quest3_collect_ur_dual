@@ -1,6 +1,7 @@
-# Dual UR7e + two wrist D435i + front D455 configuration.
-# Each arm has its own base-to-front calibration, while front D455 is fixed.
+# Dual UR7e + two wrist D435i + front/side D455 configuration.
+# Each arm has independent base-to-front/side results; both cameras stay fixed.
 mode: dual
+dual_calibration: calibration/dual_arm_camera_transforms.yaml
 front_camera_topic: /front_camera/camera/color/image_raw
 controller_topic: /quest3/controllers
 control_hz: 125.0
@@ -11,6 +12,7 @@ cameras:
   left_wrist: {model: D435i, serial: "420222071502"}
   right_wrist: {model: D435i, serial: "405622072940"}
   front: {model: D455, serial: "260922305390"}
+  side: {model: D455, serial: "260922303231"}
 
 arms:
   left_arm:
@@ -19,6 +21,7 @@ arms:
     base_frame: left_base
     tcp_frame: left_tcp
     front_calibration: calibration/left_base_to_front_camera.yaml
+    side_calibration: calibration/left_base_to_side_camera.yaml
     tcp_source: robot_active_tcp
     tcp_state_topic: /left_arm/tcp_pose
     joint_topic: /left_arm/joint_states
@@ -37,6 +40,7 @@ arms:
     base_frame: right_base
     tcp_frame: right_tcp
     front_calibration: calibration/right_base_to_front_camera.yaml
+    side_calibration: calibration/right_base_to_side_camera.yaml
     tcp_source: robot_active_tcp
     tcp_state_topic: /right_arm/tcp_pose
     joint_topic: /right_arm/joint_states

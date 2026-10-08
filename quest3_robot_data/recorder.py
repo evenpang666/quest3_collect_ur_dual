@@ -882,6 +882,13 @@ def _embed_hardware_metadata(config: dict[str, Any], hardware_path: Path) -> Non
             if not path.is_file():
                 raise FileNotFoundError(f"hardware metadata references missing calibration: {path}")
             embedded[f"{arm}/{field}"] = path.read_text(encoding="utf-8")
+    if hardware.get("dual_calibration"):
+        path = Path(hardware["dual_calibration"]).expanduser()
+        if not path.is_absolute():
+            path = (hardware_path.parent / path).resolve()
+        if not path.is_file():
+            raise FileNotFoundError(f"hardware metadata references missing dual calibration: {path}")
+        embedded["dual_calibration"] = path.read_text(encoding="utf-8")
     config["calibration_yaml"] = embedded
 
 

@@ -5,7 +5,7 @@ set -Eeo pipefail
 
 PROJECT_DIR="/home/mypc/Documents/pyw/projects/quest3_collect"
 HARDWARE_CONFIG="$PROJECT_DIR/config/hardware_dual_teleop.yaml"
-RECORDER_CONFIG="$PROJECT_DIR/config/dual_arm_front_only.yaml"
+RECORDER_CONFIG="$PROJECT_DIR/config/dual_arm.yaml"
 OUTPUT_DIR="$PROJECT_DIR/data/dual_vr_episodes"
 CONFIRMATION="MOVE_BOTH_ARMS"
 TASK_DESCRIPTION=""
@@ -48,7 +48,7 @@ cleanup() {
 }
 trap cleanup INT TERM EXIT
 
-echo "Starting both wrist cameras and front D455..."
+echo "Starting both wrist cameras and front/side D455..."
 ros2 launch quest3_robot_data realsense_four.launch.py \
   hardware_config:="$HARDWARE_CONFIG" &
 CAMERA_PID=$!

@@ -223,38 +223,21 @@ Quest Browser 打开 `http://localhost:8765`，点击“连接”“进入 VR”
 
 夹爪与机械臂离合独立：左手柄扳机按下（阈值 `0.15`）时 2F-85 以低速合拢，松开时以低速张开。当前 Robotiq 寄存器设置为速度 `20/255`、力度 `25/255`。不握侧握把也可测试夹爪，机械臂不会移动；Quest 或手柄追踪丢失时保持夹爪最后位置。
 
-## 10. 右臂独立标定与双臂遥操
+## 10. 双臂双相机标定与双臂遥操
 
-当前识别到的右臂设备为：UR7e `192.168.124.60`，右腕 D435i `405622072940`；front
-D455 保持 `260922305390` 不动。右臂必须先在示教器中标定并激活它自己的“2F-85 合爪尖端”TCP。
-之后停止所有会占用 front D455 的 RealSense ROS 节点，把 ChArUco 板稳定放在桌面任意可触达位置（**不必**与左臂标定时的位置相同），执行：
+现场 front D455 为 `260922305390`，side D455 为 `260922303231`。两臂均使用各自示教器已标定并激活的“2F-85 合爪尖端”TCP。
 
-```bash
-conda deactivate 2>/dev/null || true
-source /opt/ros/humble/setup.bash
-source ~/ros2_ws/install/setup.bash
-
-ros2 run quest3_robot_data calibrate_camera_charuco \
-  --robot-ip 192.168.124.60 \
-  --camera-serial 260922305390 \
-  --base-frame right_base \
-  --camera-frame front_camera_color_optical_frame \
-  --squares-x 10 --squares-y 7 \
-  --square-size-m 0.037 --marker-size-m 0.027 \
-  --dictionary DICT_5X5_100 \
-  --camera-samples 30 --max-touch-rms-mm 2.5 --recapture-camera \
-  --output /home/mypc/Documents/pyw/projects/quest3_collect/config/calibration/right_base_to_front_camera.yaml
-```
-
-按空格锁定一次图像后，程序会从该帧实际识别到的内角中选择四个互距最大的点；按命令行给出的行列和点 ID，让右 TCP 逐一轻触、每个点按回车记录。四点后将右臂移开并回车进行标定板位移检查。只有输出显示 `calibrated: true` 与 `PASS` 才继续。
-
-通过后启动双臂（当前未接 side D455，录制为双腕 RGB + front RGB-D，非完整四相机数据集）：
+按 [快速启动第 4 节](../QUICKSTART_COMMANDS.md#4-双臂双相机-charuco-外参标定先左臂再右臂) 执行 `calibrate_dual_camera_charuco`：先左臂 front/side 观测、触四个共同内角、双相机位移检查；左臂通过后可移动板，再重新采集并标定右臂。每个臂内部必须保持板固定，两台相机和机器人底座始终保持固定。只有四份外参都为 `calibrated: true` 才启动双臂。
 
 ```bash
 /home/mypc/Documents/pyw/projects/quest3_collect/real_scripts/start_dual_vr_teleop.sh \
   --confirm MOVE_BOTH_ARMS \
   --task "双臂协作将物体放入指定区域"
 ```
+
+左右臂各自使用可达的四个点，点 ID 和板位置可完全不同；可以分别用 `--arm left` / `--arm right` 运行。两臂都完成后才通过固定相机换算，生成 `dual_arm_camera_transforms.yaml`，一致性检查通过后才允许双臂启动。
+
+双臂启动使用 `hardware_dual_teleop.yaml + dual_arm.yaml`，录制双腕 RGB、front/side RGB-D 及双臂状态/action，保存四份外参与换算汇总元数据。
 
 左右手柄分别控制左右 UR，速度/增益/力度与当前左臂完全一致：`1:1` 相对位姿、`0.45 m/s`、约 `3.0 rad/s`、夹爪速度 `20/255`、力度 `25/255`。双臂目标在 front 相机坐标中小于 `0.20 m` 时会同时停止；分别松开并重新按住侧握把后才会恢复。
 
@@ -275,7 +258,7 @@ ros2 run quest3_robot_data export_episode_videos \
 
 默认输出目录是 HDF5 同级的 `episode_00000_videos/`，其中固定包含
 `front_cam.mp4`、`side_cam.mp4`、`wrist_left_cam.mp4`、`wrist_right_cam.mp4`。
-如果某个相机（例如尚未接入的 side D455）没有 RGB 数据集，仍会生成与 episode 等长的纯黑
+导出历史 episode 时，如果某个相机没有 RGB 数据集，仍会生成与 episode 等长的纯黑
 MP4。根据 `timestamps_ns` 自动估算帧率；需要强制帧率或覆盖旧文件时，例如：
 
 ```bash

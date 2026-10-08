@@ -1,0 +1,69 @@
+parent_frame: left_base
+child_frame: side_camera_color_optical_frame
+translation:
+- 0.8677295780525385
+- 0.9969775365698106
+- -0.7082168217278175
+quaternion_xyzw:
+- 0.11954153622445356
+- 0.013200456602282128
+- -0.03611348713247042
+- 0.9920843639074864
+matrix:
+- - 0.9970431279852486
+  - 0.0748112575427985
+  - 0.0175578097226516
+  - 0.8677295780525385
+- - -0.06849924609839392
+  - 0.9688112743284611
+  - -0.2381440068908201
+  - 0.9969775365698106
+- - -0.034826056643602166
+  - 0.2362371488122228
+  - 0.9710711381251775
+  - -0.7082168217278175
+- - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+calibrated: true
+created_utc: '2026-10-08T11:29:04.988291+00:00'
+method: table-fixed ChArUco observed by camera and touched by calibrated TCP
+camera_serial: '260922303231'
+board:
+  squares_x: 11
+  squares_y: 8
+  square_size_m: 0.07
+  marker_size_m: 0.052
+  dictionary: DICT_5X5_100
+touch_corner_ids:
+- 3
+- 9
+- 47
+- 39
+touch_rms_mm: 2.3097226172911447
+quality_limits:
+  max_touch_rms_mm: 2.5
+  max_camera_spread_mm: 3.0
+  max_board_motion_mm: 5.0
+  max_board_motion_deg: 2.0
+final_board_motion_mm: 0.17315081652614028
+final_board_motion_deg: 0.029697051642035947
+camera_samples: 30
+color_fps: 15
+camera_translation_max_spread_mm: 0.6803092028402029
+camera_rotation_max_spread_deg: 0.0723061585515797
+intrinsics:
+  width: 1280
+  height: 720
+  fx: 644.1300048828125
+  fy: 642.9676513671875
+  ppx: 644.22607421875
+  ppy: 363.4444580078125
+  distortion:
+  - -0.0570748969912529
+  - 0.06299111247062683
+  - -0.00032734277192503214
+  - 0.0002021524851443246
+  - -0.02014397270977497
+camera_quality_passed: true

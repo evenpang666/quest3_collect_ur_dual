@@ -7,6 +7,7 @@ source_buffer_size: 30
 writer_queue_size: 30
 rgb_storage: raw_lzf  # change to jpeg if lossless disk throughput is insufficient
 jpeg_quality: 90
+storage_backend: hdf5
 
 cameras:
   left_wrist:
@@ -16,6 +17,7 @@ cameras:
   front:
     rgb_topic: /front_camera/camera/color/image_raw
     depth_topic: /front_camera/camera/aligned_depth_to_color/image_raw
+    record_size: [640, 480]
   side:
     rgb_topic: /side_camera/camera/color/image_raw
     depth_topic: /side_camera/camera/aligned_depth_to_color/image_raw

@@ -1,6 +1,6 @@
 # Quest 3 + 双 UR7e 命令快查（当前现场）
 
-本文档只保留当前已接入、已验证的现场流程。详细实现和历史只读调试见 [`real_scripts/README.md`](real_scripts/README.md)。
+本文档记录当前现场配置与操作流程；双臂启动前须完成四份相机外参标定。详细实现和历史只读调试见 [`real_scripts/README.md`](real_scripts/README.md)。
 
 | 设备 | 标识 |
 |---|---|
@@ -8,6 +8,7 @@
 | 右 UR7e | `192.168.124.60` |
 | 主机有线口 | `192.168.124.59/24`，无网关 |
 | front D455 | `260922305390` |
+| side D455 | `260922303231` |
 | 左腕 D435i | `420222071502` |
 | 右腕 D435i | `405622072940` |
 | Quest 3 ADB | `2G97C5ZJ2L05V1` |
@@ -77,42 +78,53 @@ nc -zvw 1 192.168.124.60 63352
 
 ## 3. 标定文件状态
 
-检查左右 front 外参：
+检查左右臂到 front/side 的四份外参：
 
 ```bash
-grep -E 'calibrated|touch_rms_mm|final_board_motion' \
+grep -E 'calibrated|camera_serial|touch_rms_mm|final_board_motion' \
   config/calibration/left_base_to_front_camera.yaml \
-  config/calibration/right_base_to_front_camera.yaml
+  config/calibration/left_base_to_side_camera.yaml \
+  config/calibration/right_base_to_front_camera.yaml \
+  config/calibration/right_base_to_side_camera.yaml \
+  config/calibration/dual_arm_camera_transforms.yaml
 ```
 
-只有两份文件都显示 `calibrated: true` 才启动双臂。当前系统使用示教器的活动 TCP，不需要由脚本再次设置 TCP 偏移。
+四份外参和一份换算汇总都必须显示 `calibrated: true`。当前遥操配置使用示教器的活动 TCP，不需要脚本再次设置 TCP 偏移。
 
-## 4. 右臂 ChArUco 外参标定（重做时使用）
+## 4. 双臂双相机 ChArUco 外参标定（先左臂、再右臂）
 
-先停止所有占用 front D455 的 RealSense 节点。标定板可以与左臂标定时放在不同位置，但在本次“拍相机样本→触四点”的过程中必须固定不动。
+先停止 VR 遥操、相机预览及所有占用 front/side D455 的 RealSense 节点。确认左右示教器均已激活各自标定过的 TCP。两台相机和机械臂底座在整个流程中保持固定。
 
 ```bash
-ros2 run quest3_robot_data calibrate_camera_charuco \
-  --robot-ip 192.168.124.60 \
-  --camera-serial 260922305390 \
-  --base-frame right_base \
-  --camera-frame front_camera_color_optical_frame \
-  --squares-x 10 --squares-y 7 \
-  --square-size-m 0.037 --marker-size-m 0.027 \
+ros2 run quest3_robot_data calibrate_dual_camera_charuco \
+  --config /home/mypc/Documents/pyw/projects/quest3_collect/config/hardware_dual_teleop.yaml \
+  --squares-x 11 --squares-y 8 \
+  --square-size-m 0.070 --marker-size-m 0.052 \
   --dictionary DICT_5X5_100 \
-  --camera-samples 30 --max-touch-rms-mm 2.5 --recapture-camera \
-  --output /home/mypc/Documents/pyw/projects/quest3_collect/config/calibration/right_base_to_front_camera.yaml
+  --camera-samples 30 --max-touch-rms-mm 2.5
 ```
 
-操作顺序：空格锁定相机样本 → 按命令行实际检测到的四个点逐一触碰并回车 → 移开机械臂后回车做标定板位移检查。必须得到 `calibrated: true` 与 `PASS`。
+相机序列号从配置读取：front 为 `260922305390`，side 为 `260922303231`。板参数为 11×8、70 mm 格子、52 mm 标记；必须与实物一致。
 
-左臂重标定时仅替换：
+标定会枚举每台相机实际支持的 RGB 格式，优先 `1280×720@30`，其次 `1280×720@15`，必要时使用 `640×480`。当前 side 通过 USB 2.1 连接，不支持 `1280×720@30`，会使用 `1280×720@15`；以启动时打印的 `RGB ready` 为准。采样和最终位移检查均读取所用格式的实际内参，无需修改标定命令。
 
-```text
---robot-ip 192.168.124.61
---base-frame left_base
---output .../left_base_to_front_camera.yaml
-```
+1. 将板放在左臂可达、两台相机均可见的位置，固定后回车。
+2. front 窗口稳定后按一次空格采集，再在 side 窗口按一次空格采集。两次观测之间保持板固定。
+3. 程序从两台相机都识别到的内角中选择四个分散的初始触点，并保存两张标注图。触碰提示直接给出从板坐标原点起的第几行、第几列及 corner ID；行列从 1 开始，仅数棋盘格内部交点，不数板外边缘。当前 11×8 方格板有 10×7 个内角（ID 0–69），`corner ID 19` 为第 2 行、第 10 列，可对照图中的 `P19`。左臂 TCP 依次触碰指定角点，每点回车记录。不可达时可输入 `id=N`，替换点可以是同一块固定板上任意有效内角，但四点不能重复或共线。替换提示会给出行列；若未在两台锁定图中共同识别，需按行列确认实物位置，标注图仍显示初始推荐点。无效输入会重新提示，保留已记录触点。
+4. 移开左臂，保持板固定，回车检查两台相机中的标定板位移。只有两份结果均通过，才显示左臂 `PASS`。
+5. **左臂通过后允许移动标定板**，将其移至右臂可达、两台相机均可见的位置并重新固定。右臂重新拍摄两台相机、触四点并检查位移；不会复用左臂的板位姿或触点数据。
+
+每个臂内部，从第一台相机拍摄到两台相机的最终位移检查结束，标定板必须固定。两台相机共同可见的内角不足四个或共线时，调整板的位置后重新开始该臂。
+
+**左右臂各自选择四点，点 ID 可以完全不同，不要求两臂工作空间重叠。** 上面的“共同触点”只指本臂当前板位置下两台相机都看见的点。两臂也可以分两次运行：先在上面的命令追加 `--arm left`，完成并移动板后，再用 `--arm right` 运行；每次可各自指定 `--touch-corner-ids`。
+
+两臂都完成后，程序才通过固定相机换算，生成 `config/calibration/dual_arm_camera_transforms.yaml`，包含左右基座之间的变换、front 到 side 的变换及两条路径的一致性误差。例如 `left_T_right = left_T_front × inverse(right_T_front)`，将右基座坐标转换到左基座；板位置和触点无需相同。front 和 side 两条换算路径以及两臂算出的相机相对位姿须一致，默认允许误差为 `10 mm / 3°`，可通过 `--max-cross-translation-mm` / `--max-cross-rotation-deg` 调整。
+
+若最终一致性检查失败，四份独立结果保留，汇总标记 `calibrated: false` 并阻止双臂启动。检查相机/底座是否移动及触点是否正确，再备份并重做受影响臂的两份外参。任一外参文件改变后，预检会提示汇总过期；重新运行上面的命令即可保留已通过的两臂结果并重新换算。
+
+新会话默认重新采集相机和触点；已经通过且设备/坐标系匹配的完整相机对会保留并跳过。单独开始右臂可在上面的命令追加 `--arm right`（左臂为 `--arm left`）。仅在板仍固定于上次位置时，追加 `--arm right --resume` 可续做右臂检查点；板已移动时不要使用 `--resume`。
+
+要重做已通过的标定，先把对应臂的 front/side 两份最终 YAML 移至备份目录，再执行新会话。已有的通过结果不会被直接覆盖；本次任一相机未通过质量门时，该臂两份结果都标记为 `calibrated: false`，可重试。
 
 ## 5. 左臂 VR 遥操
 
@@ -157,7 +169,7 @@ real_scripts/start_dual_vr_teleop.sh --confirm MOVE_BOTH_ARMS \
 
 录制：左手柄 **Y 键**、右手柄 **B 键**，或网页“开始录制/停止并保存”按钮均可切换。退出 VR、网页断开或终端 `Ctrl-C` 会停止并保存当前 episode。
 
-当前未接 side D455，双臂 episode 保存 front RGB-D、左右腕 RGB、双臂关节状态、commanded action 和夹爪状态/命令；side 相机视频会在导出时生成全黑占位。
+双臂启动脚本使用 `hardware_dual_teleop.yaml + dual_arm.yaml`，episode 保存 front/side RGB-D、左右腕 RGB、双臂关节状态、commanded action 和夹爪状态/命令，并嵌入四份外参与双臂换算汇总。`dual_arm_front_only.yaml` 仅保留为无 side 相机时的临时配置。
 
 Quest 头显使用 WebXR `immersive-ar` 现实透视：背景透明，可看到真实工作场景；视野上方保留随头部移动的录制状态、计时、Y/B 操作提示和录制中断原因。front / left wrist / right wrist 三路相机画面暂不显示，头显页面不再请求预览 JPEG。相机采集与 episode 保存不受影响：front RGB 源图为 `1280×720@30`，深度为 `640×480@30`；录制器仍将 front RGB 与深度写入 `640×480` HDF5 数据格式，腕部数据不变。
 

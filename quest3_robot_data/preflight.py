@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from hashlib import sha256
 import re
 import shutil
 import socket
@@ -55,16 +56,19 @@ def main() -> None:
     for name, arm in config.get("arms", {}).items():
         if "CHANGE_ME" in str(arm.get("robot_ip")):
             failures.append(f"{name}: robot_ip is not configured")
-        # Teleoperation is expressed in the calibrated front-camera frame.  A
-        # side camera is dataset metadata, not a control prerequisite, and is
-        # intentionally absent during a one-arm/front-camera commissioning
-        # session.
+        # Every configured scene camera needs an extrinsic for each arm.
+        # Front-only commissioning configurations remain supported.
         required_fields = ["front_calibration"]
+        if "side" in config.get("cameras", {}):
+            required_fields.append("side_calibration")
         if arm.get("tcp_source", "calibration_file") != "robot_active_tcp":
             required_fields.append("tcp_calibration")
         for field in required_fields:
             if allow_uncalibrated:
                 warnings.append(f"{name}: {field} skipped in receive-only debug mode")
+                continue
+            if not arm.get(field):
+                failures.append(f"{name}: {field} is not configured")
                 continue
             calibration = resolve(path, arm[field])
             if not calibration.is_file():
@@ -100,6 +104,26 @@ def main() -> None:
                         )
                 except Exception as exc:
                     failures.append(f"{name}: cannot read current TCP for workspace check: {exc}")
+
+    if config.get("dual_calibration") and not allow_uncalibrated:
+        summary_path = resolve(path, config["dual_calibration"])
+        if not summary_path.is_file():
+            failures.append(f"missing dual_calibration: {summary_path}")
+        else:
+            summary = yaml.safe_load(summary_path.read_text(encoding="utf-8")) or {}
+            if not summary.get("calibrated", False):
+                failures.append("dual_calibration is calibrated:false; cross-arm consistency must pass")
+            sources = summary.get("source_calibrations", {})
+            for arm in config.get("arms", {}).values():
+                for camera in ("front", "side"):
+                    source = sources.get(f"{arm.get('role')}/{camera}", {})
+                    expected_path = arm.get(f"{camera}_calibration")
+                    source_path = Path(source.get("path", ""))
+                    if (not expected_path or not source_path.is_file()
+                            or source_path.resolve() != resolve(path, expected_path)
+                            or sha256(source_path.read_bytes()).hexdigest() != source.get("sha256")):
+                        failures.append("dual_calibration is stale; rerun dual calibration to recompute transforms")
+                        break
 
     configured_serials = {str(camera.get("serial")) for camera in config.get("cameras", {}).values()}
     if any("CHANGE_ME" in serial for serial in configured_serials):
