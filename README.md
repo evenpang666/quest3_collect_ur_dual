@@ -1,6 +1,6 @@
 # Quest 3 + 双 UR7e 实体遥操作与数据采集
 
-本项目使用 Quest Browser 的 WebXR 获取左右手柄位姿，通过 USB `adb reverse` 连接主机；头显通过 WebXR `immersive-ar` 显示现实透视，仅叠加录制文字提示，暂不显示三路相机画面；RealSense 图像仍正常采集和保存。左手柄固定控制左 UR7e，右手柄固定控制右 UR7e。手柄只提供相对于按下握把时的 6DoF 位姿偏移，笛卡尔目标通过 RTDE `servoL` 发送，由每台 UR 控制器内部完成 IK。
+本项目使用 Quest Browser 的 WebXR 获取左右手柄位姿，通过 USB `adb reverse` 连接主机；头显通过 WebXR `immersive-ar` 显示现实透视，仅叠加录制文字提示，暂不显示三路相机画面；RealSense 图像仍正常采集和保存。左手柄固定控制左 UR7e，右手柄固定控制右 UR7e。每次按下侧握把时，记录手柄 `gripSpace` 与该臂当前 Tool/TCP 的位姿；后续手柄相对位姿偏移按 X 同向、Y/Z 反向映射到 TCP，头显朝向和 front 相机朝向均不参与运动方向换算。笛卡尔目标通过 RTDE `servoL` 发送，由每台 UR 控制器内部完成 IK。
 
 默认配置支持双臂；`hardware_single.yaml + single_arm.yaml` 支持只启动左臂。
 
@@ -154,7 +154,7 @@ ros2 launch quest3_robot_data quest3_system.launch.py \
 - 现实透视可见，Y/B 能切换录制，提示面板计时与中断原因正常显示；
 - 在小幅移动手柄时，实际机械臂方向与预期一致。
 
-如果方向不对，不要用代码符号硬凑；检查相机光学坐标系命名和 front 外参。
+手柄 `gripSpace` 的 X 对应 Tool +X，Y 对应 Tool -Y，Z 对应 Tool -Z；因此手柄前方（-Z）对应 Tool +Z。如果现场方向仍不符，检查示教器中当前活动 TCP 的坐标轴。front 外参只用于双臂 TCP 距离换算，不决定遥操方向。
 
 ## 7. 低速启用实体运动
 

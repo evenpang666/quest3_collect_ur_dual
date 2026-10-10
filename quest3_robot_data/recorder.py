@@ -32,6 +32,9 @@ from rclpy.utilities import remove_ros_args
 from sensor_msgs.msg import Image, JointState
 from std_msgs.msg import Bool, Float32, Float64MultiArray, String
 
+from .episode_paths import episode_output_dir
+from .teleop_core import ControllerGate, ControllerState
+
 
 @dataclass
 class Sample:
@@ -451,7 +454,9 @@ class DatasetRecorder(Node):
     def __init__(self, config: dict[str, Any], output_dir: Path):
         super().__init__("quest3_dataset_recorder")
         self.config = self._validate_config(config)
-        self.output_dir = output_dir.expanduser().resolve()
+        self.output_dir = episode_output_dir(
+            output_dir, self.config["mode"], self.config["task_description"]
+        )
         self.bridge = CvBridge()
         writer_type = FolderEpisodeWriter if self.config["storage_backend"] == "folder_npy" else EpisodeWriter
         writer_quality = self.config["folder_rgb_jpeg_quality"] if self.config["storage_backend"] == "folder_npy" else self.config["jpeg_quality"]
@@ -469,6 +474,10 @@ class DatasetRecorder(Node):
         self._ui_commands: queue.SimpleQueue[str] = queue.SimpleQueue()
         self._episode_number = self._next_episode_number()
         self._last_reference_stamp = -1
+        self.controller_gate = ControllerGate(
+            ("left",) if self.config["mode"] == "single" else ("left", "right"),
+            float(self.config.get("controller_timeout_sec", 0.25)),
+        )
         buffer_size = int(self.config["source_buffer_size"])
         self._buffers: dict[str, deque[tuple[int, Any]]] = {}
         self._subscriptions = []
@@ -476,12 +485,16 @@ class DatasetRecorder(Node):
         self.record_sub = self.create_subscription(
             Bool, self.config["record_topic"], self._record_command, 10
         )
+        self.controller_sub = self.create_subscription(
+            String, self.config.get("controller_topic", "/quest3/controllers"), self._controller_state, 10
+        )
         self.safety_sub = self.create_subscription(
             String, "/quest3/safety_event", self._safety_event, 10
         )
         self.status_pub = self.create_publisher(String, "/quest3/system_status", 10)
         self.create_timer(0.005, self._aggregate_latest_reference)
         self.create_timer(0.1, self._process_ui_commands)
+        self.create_timer(0.05, self._check_controller_tracking)
         self.create_timer(2.0, self._report_stats)
 
         self.camera_order = list(self.config["cameras"])
@@ -740,6 +753,26 @@ class DatasetRecorder(Node):
     def _record_command(self, message: Bool) -> None:
         self._set_recording(message.data, origin="ROS")
 
+    def _controller_state(self, message: String) -> None:
+        try:
+            data = json.loads(message.data)
+        except json.JSONDecodeError:
+            return
+        if not isinstance(data, dict):
+            return
+        states = {role: ControllerState.from_dict(data.get(role)) for role in self.controller_gate.roles}
+        now_ns = self.get_clock().now().nanoseconds
+        self.controller_gate.observe(states, now_ns)
+        self._check_controller_tracking()
+
+    def _check_controller_tracking(self) -> None:
+        now_ns = self.get_clock().now().nanoseconds
+        if self.recording and not self.controller_gate.ready(now_ns):
+            missing = ", ".join(self.controller_gate.missing(now_ns))
+            self.recording_interrupted_reason = f"手柄追踪中断（{missing}）；录制已停止"
+            self._set_recording(False, origin="CONTROLLER TRACKING LOST")
+            self._publish_status()
+
     def _safety_event(self, message: String) -> None:
         """Finish an active episode when RTDE reports loss of robot control."""
         try:
@@ -768,6 +801,13 @@ class DatasetRecorder(Node):
 
     def _set_recording(self, enabled: bool, origin: str) -> None:
         if enabled == self.recording:
+            return
+        now_ns = self.get_clock().now().nanoseconds
+        if enabled and not self.controller_gate.ready(now_ns):
+            missing = ", ".join(self.controller_gate.missing(now_ns))
+            self.recording_interrupted_reason = f"手柄未就绪（{missing}）；未开始录制"
+            self.get_logger().error(self.recording_interrupted_reason)
+            self._publish_status()
             return
         if self.writer.failed:
             if not enabled:
@@ -803,6 +843,7 @@ class DatasetRecorder(Node):
             self.recording_started_ns = None
             self.writer.put_control(EpisodeWriter.STOP)
             self.get_logger().info(f"{origin}: stop requested")
+        self._publish_status()
 
     def request_keyboard_command(self, command: str) -> None:
         self._ui_commands.put(command)
@@ -840,6 +881,8 @@ class DatasetRecorder(Node):
             "writer_queue": self.writer.events.qsize(),
             "writer_error": repr(self.writer.failed) if self.writer.failed else None,
             "recording_interrupted": self.recording_interrupted_reason,
+            "controller_ready": self.controller_gate.ready(self.get_clock().now().nanoseconds),
+            "controller_missing": list(self.controller_gate.missing(self.get_clock().now().nanoseconds)),
         })
         self.status_pub.publish(status)
 
@@ -895,7 +938,10 @@ def _embed_hardware_metadata(config: dict[str, Any], hardware_path: Path) -> Non
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Record synchronized UR/Realsense demonstrations to HDF5.")
     parser.add_argument("--config", required=True, type=Path, help="YAML topic and joint-order configuration")
-    parser.add_argument("--output-dir", required=True, type=Path, help="directory for episode_XXXXX.hdf5")
+    parser.add_argument(
+        "--output-dir", required=True, type=Path,
+        help="base directory for episodes (dual mode adds a task-name subdirectory)",
+    )
     parser.add_argument("--hardware-config", type=Path, help="embed robot/TCP/camera calibration metadata")
     parser.add_argument(
         "--task-description",

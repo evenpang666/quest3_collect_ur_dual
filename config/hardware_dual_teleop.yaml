@@ -70,5 +70,5 @@ rtde:
   # Retry RTDE after a robot-side control script loss (E-stop/protective stop).
   rtde_reconnect_interval_sec: 1.0
   gripper_port: 63352
-  gripper_speed: 20
-  gripper_force: 25
+  gripper_speed: 255
+  gripper_force: 20

@@ -2,15 +2,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Mapping
 
 import numpy as np
 
 from .transforms import matrix_to_quaternion, quaternion_to_matrix, unit_quaternion
 
 
-# WebXR: +x right, +y up, -z forward. ROS optical: +x right, +y down, +z forward.
-WEBXR_TO_OPTICAL = np.diag([1.0, -1.0, -1.0])
+# Field-checked grip-to-Tool axis alignment: X same, Y and Z reversed.
+# This is a 180-degree rotation about X, so orientation remains right-handed.
+GRIP_TO_TOOL_AXES = np.diag([1.0, -1.0, -1.0])
 
 
 @dataclass(frozen=True)
@@ -31,9 +32,40 @@ class ControllerState:
             trigger = float(value.get("trigger", 0.0))
         except (KeyError, TypeError, ValueError):
             return None
-        if position.shape != (3,) or not np.all(np.isfinite(position)):
+        if (
+            position.shape != (3,)
+            or not np.all(np.isfinite(position))
+            or not np.isfinite(squeeze)
+            or not np.isfinite(trigger)
+        ):
             return None
         return cls(position, orientation, squeeze, trigger)
+
+
+class ControllerGate:
+    """Require fresh tracking for every configured controller role."""
+
+    def __init__(self, roles: tuple[str, ...], timeout_sec: float):
+        self.roles = roles
+        self.timeout_ns = int(timeout_sec * 1e9)
+        self.last_ns: int | None = None
+        self.tracked = {role: False for role in roles}
+
+    def observe(self, states: Mapping[str, ControllerState | None], now_ns: int) -> None:
+        self.last_ns = now_ns
+        self.tracked = {role: states.get(role) is not None for role in self.roles}
+
+    def ready(self, now_ns: int) -> bool:
+        return (
+            self.last_ns is not None
+            and 0 <= now_ns - self.last_ns <= self.timeout_ns
+            and all(self.tracked.values())
+        )
+
+    def missing(self, now_ns: int) -> tuple[str, ...]:
+        if self.last_ns is None or not 0 <= now_ns - self.last_ns <= self.timeout_ns:
+            return self.roles
+        return tuple(role for role in self.roles if not self.tracked[role])
 
 
 @dataclass(frozen=True)
@@ -47,7 +79,7 @@ class MappedTarget:
 
 
 class AnchoredPoseMapper:
-    """Map hand motion relative to a clutch anchor into an absolute TCP target."""
+    """Map each hand grip frame onto its arm's Tool/TCP frame at clutch time."""
 
     def __init__(
         self,
@@ -58,6 +90,7 @@ class AnchoredPoseMapper:
         gripper_close_threshold: float = 0.15,
         enable_rotation: bool = True,
     ) -> None:
+        # Retained for the dual-arm TCP separation check in pose_mapper.
         self.base_to_camera = np.asarray(base_to_front_camera, dtype=np.float64)
         if self.base_to_camera.shape != (4, 4):
             raise ValueError("base_to_front_camera must be 4x4")
@@ -91,19 +124,20 @@ class AnchoredPoseMapper:
             self._tcp_anchor = current_tcp.copy()
             return MappedTarget(current_tcp.copy(), True, gripper, just_anchored=True)
 
-        base_from_xr = self.base_to_camera[:3, :3] @ WEBXR_TO_OPTICAL
-        hand_delta = hand.position - self._hand_anchor.position
+        hand_anchor_rotation = quaternion_to_matrix(self._hand_anchor.orientation)
+        hand_rotation = quaternion_to_matrix(hand.orientation)
+        tool_rotation = self._tcp_anchor[:3, :3]
+        # Express displacement in the anchored grip frame, correct its axes,
+        # then convert through the anchored TCP orientation into the base.
+        hand_delta = hand_anchor_rotation.T @ (hand.position - self._hand_anchor.position)
         target = self._tcp_anchor.copy()
-        target[:3, 3] += base_from_xr @ hand_delta * self.position_gain
+        target[:3, 3] += tool_rotation @ GRIP_TO_TOOL_AXES @ hand_delta * self.position_gain
         if self.enable_rotation:
-            r_now = quaternion_to_matrix(hand.orientation)
-            r_anchor = quaternion_to_matrix(self._hand_anchor.orientation)
-            delta_xr = r_now @ r_anchor.T
-            # Axis-basis change for the relative controller rotation.
-            delta_base = base_from_xr @ delta_xr @ base_from_xr.T
+            delta_grip = hand_anchor_rotation.T @ hand_rotation
+            delta_tool = GRIP_TO_TOOL_AXES @ delta_grip @ GRIP_TO_TOOL_AXES.T
             if self.rotation_gain != 1.0:
                 # Scale via quaternion angle to keep the implementation stable.
-                q = matrix_to_quaternion(delta_base)
+                q = matrix_to_quaternion(delta_tool)
                 if q[3] < 0:
                     q = -q
                 angle = 2 * np.arctan2(np.linalg.norm(q[:3]), q[3])
@@ -111,6 +145,6 @@ class AnchoredPoseMapper:
                     axis = q[:3] / np.linalg.norm(q[:3])
                     half = angle * self.rotation_gain / 2
                     q = np.concatenate((axis * np.sin(half), [np.cos(half)]))
-                    delta_base = quaternion_to_matrix(q)
-            target[:3, :3] = delta_base @ self._tcp_anchor[:3, :3]
+                    delta_tool = quaternion_to_matrix(q)
+            target[:3, :3] = tool_rotation @ delta_tool
         return MappedTarget(target, True, gripper)

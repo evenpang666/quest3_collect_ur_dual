@@ -14,7 +14,7 @@ from rclpy.node import Node
 from rclpy.utilities import remove_ros_args
 from std_msgs.msg import Bool, Float32, String
 
-from .teleop_core import AnchoredPoseMapper, ControllerState, MappedTarget
+from .teleop_core import AnchoredPoseMapper, ControllerGate, ControllerState, MappedTarget
 from .transforms import load_transform, matrix_to_quaternion, transform
 
 
@@ -144,8 +144,8 @@ class PoseMapperNode(Node):
             String, config.get("controller_topic", "/quest3/controllers"), self._controllers, 10
         )
         self.status_pub = self.create_publisher(String, "/quest3/system_status", 10)
-        self.last_controller_ns = 0
-        self.timeout_ns = int(float(config.get("controller_timeout_sec", 0.25)) * 1e9)
+        self.controller_gate = ControllerGate(tuple(self.arms), float(config.get("controller_timeout_sec", 0.25)))
+        self.rearm_required = True
         self.min_tcp_separation = float(config.get("min_tcp_separation_m", 0.20))
         self.collision_stop = False
         self.create_timer(0.05, self._watchdog)
@@ -155,8 +155,31 @@ class PoseMapperNode(Node):
             data = json.loads(message.data)
         except json.JSONDecodeError:
             return
-        self.last_controller_ns = self.get_clock().now().nanoseconds
+        if not isinstance(data, dict):
+            return
+        now_ns = self.get_clock().now().nanoseconds
         controller_states = {role: ControllerState.from_dict(data.get(role)) for role in self.arms}
+        self.controller_gate.observe(controller_states, now_ns)
+        if not self.controller_gate.ready(now_ns):
+            self.rearm_required = True
+            for arm in self.arms.values():
+                arm.reset()
+            return
+        if self.rearm_required:
+            # Tracking may return while a clutch is still held. Require a
+            # deliberate release before a new motion anchor can be acquired.
+            for role, arm in self.arms.items():
+                arm.reset()
+                state = controller_states[role]
+                assert state is not None
+                arm.publish(MappedTarget(None, False, float(state.trigger >= arm.mapper.gripper_close_threshold)))
+            if all(
+                state is not None and state.squeeze < self.arms[role].mapper.deadman_threshold
+                for role, state in controller_states.items()
+            ):
+                self.rearm_required = False
+                self.collision_stop = False
+            return
         if self.collision_stop:
             released = all(
                 state is None or state.squeeze < self.arms[role].mapper.deadman_threshold
@@ -189,13 +212,18 @@ class PoseMapperNode(Node):
             arm.publish(results[role])
 
     def _watchdog(self) -> None:
-        stale = self.get_clock().now().nanoseconds - self.last_controller_ns > self.timeout_ns
-        if stale:
+        now_ns = self.get_clock().now().nanoseconds
+        ready = self.controller_gate.ready(now_ns)
+        if not ready:
+            self.rearm_required = True
             for arm in self.arms.values():
                 if arm.enabled:
                     arm.reset()
         status = String()
         values = {f"{role}_arm": "enabled" if arm.enabled else "stopped" for role, arm in self.arms.items()}
+        values["controller_ready"] = ready
+        values["controller_rearm_required"] = self.rearm_required
+        values["controller_missing"] = list(self.controller_gate.missing(now_ns))
         values["dual_tcp_guard"] = "STOP" if self.collision_stop else "ok"
         status.data = json.dumps(values)
         self.status_pub.publish(status)

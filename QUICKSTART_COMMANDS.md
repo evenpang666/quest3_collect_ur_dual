@@ -135,6 +135,8 @@ real_scripts/start_left_vr_teleop.sh --confirm MOVE_LEFT_ARM \
 
 头显中打开 `http://localhost:8765`，点击“连接”→“进入现实透视”。左手柄侧握把为左臂位姿离合；按住后先保持静止完成锚定，再移动/旋转手柄。左扳机独立控制左夹爪：按住缓慢合拢，松开缓慢张开。
 
+左手柄位移/旋转相对握住时的 `gripSpace` 锚点计算，再按 X 同向、Y/Z 反向映射到左臂当时的 Tool/TCP 坐标系；头显与 front 相机朝向不参与运动方向换算。
+
 `--task` 为本次运行固定的自然语言任务描述。每个录制出的 HDF5 都会在根属性 `task_description` 中保存此文本；若任务改变，退出当前脚本后带新文本重新启动。
 
 停止：终端按 `Ctrl-C`。
@@ -165,11 +167,18 @@ real_scripts/start_dual_vr_teleop.sh --confirm MOVE_BOTH_ARMS \
 - 左手柄侧握把：左臂相对位姿遥操；左扳机：左夹爪。
 - 右手柄侧握把：右臂相对位姿遥操；右扳机：右夹爪。
 - 两臂均为 1:1 相对位姿、最大平移约 `0.45 m/s`、最大角速度约 `3.0 rad/s`。
+- 双臂夹爪速度均为 `255/255`，力度为 `20/255`；单臂启动脚本仍使用速度 `20/255`。
 - 两个 TCP 在 front 相机坐标中的距离小于 `0.20 m` 时，双臂同时停止；松开再按住侧握把重新锚定后恢复。
+
+每次握住侧握把时，记录各手柄 `gripSpace` 与对应机械臂当时的 Tool/TCP 位姿；之后的位移和旋转按 X 同向、Y/Z 反向的轴关系换算。头显和 front 相机朝向不决定运动方向。首次实体运动前，低速空载分别核对两臂 Tool 的 X/Y/Z 正负方向；“手柄前方”（-Z）对应 Tool 的正 Z 轴，实际桌面方向取决于活动 TCP 的姿态。
+
+进入现实透视后，必须等左右手柄都被追踪，双臂遥操和录制才会就绪。任一手柄失联或追踪超时，两臂立即撤销运动使能、当前录制停止；恢复追踪后先松开两侧握把，再重新按住锚定。网页与头显会提示手柄未就绪，录制器会拒绝缺手柄的开始请求。
 
 录制：左手柄 **Y 键**、右手柄 **B 键**，或网页“开始录制/停止并保存”按钮均可切换。退出 VR、网页断开或终端 `Ctrl-C` 会停止并保存当前 episode。
 
 双臂启动脚本使用 `hardware_dual_teleop.yaml + dual_arm.yaml`，episode 保存 front/side RGB-D、左右腕 RGB、双臂关节状态、commanded action 和夹爪状态/命令，并嵌入四份外参与双臂换算汇总。`dual_arm_front_only.yaml` 仅保留为无 side 相机时的临时配置。
+
+双臂 episode 按 `--task` 分目录保存：任务名称转为小写，空格替换为下划线；例如 `--task "Pick Up Cube"` 保存到 `data/dual_vr_episodes/pick_up_cube/`。每个任务目录独立编号。
 
 Quest 头显使用 WebXR `immersive-ar` 现实透视：背景透明，可看到真实工作场景；视野上方保留随头部移动的录制状态、计时、Y/B 操作提示和录制中断原因。front / left wrist / right wrist 三路相机画面暂不显示，头显页面不再请求预览 JPEG。相机采集与 episode 保存不受影响：front RGB 源图为 `1280×720@30`，深度为 `640×480@30`；录制器仍将 front RGB 与深度写入 `640×480` HDF5 数据格式，腕部数据不变。
 
@@ -193,8 +202,8 @@ ros2 run quest3_robot_data export_folder_episode_videos \
 双臂 episode：
 
 ```text
-data/dual_vr_episodes/episode_00000.hdf5
-data/dual_vr_episodes/episode_00001.hdf5
+data/dual_vr_episodes/task_name/episode_00000.hdf5
+data/dual_vr_episodes/task_name/episode_00001.hdf5
 ...
 ```
 
@@ -209,20 +218,20 @@ data/left_vr_episodes/episode_00000.hdf5
 
 ```bash
 ros2 run quest3_robot_data inspect_episode \
-  data/dual_vr_episodes/episode_00000.hdf5
+  data/dual_vr_episodes/task_name/episode_00000.hdf5
 ```
 
 导出固定四路 MP4：
 
 ```bash
 ros2 run quest3_robot_data export_episode_videos \
-  data/dual_vr_episodes/episode_00000.hdf5
+  data/dual_vr_episodes/task_name/episode_00000.hdf5
 ```
 
 默认输出：
 
 ```text
-data/dual_vr_episodes/episode_00000_videos/
+data/dual_vr_episodes/task_name/episode_00000_videos/
 ├── front_cam.mp4
 ├── side_cam.mp4
 ├── wrist_left_cam.mp4
@@ -233,7 +242,7 @@ data/dual_vr_episodes/episode_00000_videos/
 
 ```bash
 ros2 run quest3_robot_data export_episode_videos \
-  data/dual_vr_episodes/episode_00000.hdf5 \
+  data/dual_vr_episodes/task_name/episode_00000.hdf5 \
   --fps 30 --overwrite
 ```
 

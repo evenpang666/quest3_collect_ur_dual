@@ -239,7 +239,11 @@ Quest Browser 打开 `http://localhost:8765`，点击“连接”“进入 VR”
 
 双臂启动使用 `hardware_dual_teleop.yaml + dual_arm.yaml`，录制双腕 RGB、front/side RGB-D 及双臂状态/action，保存四份外参与换算汇总元数据。
 
-左右手柄分别控制左右 UR，速度/增益/力度与当前左臂完全一致：`1:1` 相对位姿、`0.45 m/s`、约 `3.0 rad/s`、夹爪速度 `20/255`、力度 `25/255`。双臂目标在 front 相机坐标中小于 `0.20 m` 时会同时停止；分别松开并重新按住侧握把后才会恢复。
+双臂 episode 保存到 `data/dual_vr_episodes/task_name/episode_00000.hdf5`。`task_name` 由 `--task` 转成小写、将空格替换为下划线；例如 `Pick Up Cube` 对应 `pick_up_cube`。每个任务目录独立编号。
+
+左右手柄分别控制左右 UR：`1:1` 相对位姿、`0.45 m/s`、约 `3.0 rad/s`、双臂夹爪速度 `255/255`、力度 `20/255`。握住侧握把后，各手柄 `gripSpace` 相对偏移按 X 同向、Y/Z 反向映射到各自当时的 Tool/TCP 坐标系；头显和 front 相机朝向不参与运动方向换算。双臂目标在 front 相机坐标中小于 `0.20 m` 时会同时停止；分别松开并重新按住侧握把后才会恢复。单臂脚本仍使用 `hardware_left_teleop.yaml` 中的夹爪速度 `20/255`。
+
+双臂模式要求左右手柄同时被 WebXR 追踪。缺少任一手柄时，两臂都不能运动，也不能开始录制；录制中追踪丢失会停止并保存已有有效帧。手柄恢复后须先松开两侧握把，再重新按住。
 
 启动前预检会读取两臂当前 TCP，确认其位于各自的虚拟工作空间内；若显示
 当前 `hardware_left_teleop.yaml` 与 `hardware_dual_teleop.yaml` 不设置软件 Cartesian
@@ -253,7 +257,7 @@ source /opt/ros/humble/setup.bash
 source ~/ros2_ws/install/setup.bash
 
 ros2 run quest3_robot_data export_episode_videos \
-  /home/mypc/Documents/pyw/projects/quest3_collect/data/dual_vr_episodes/episode_00000.hdf5
+  /home/mypc/Documents/pyw/projects/quest3_collect/data/dual_vr_episodes/task_name/episode_00000.hdf5
 ```
 
 默认输出目录是 HDF5 同级的 `episode_00000_videos/`，其中固定包含
@@ -263,6 +267,6 @@ MP4。根据 `timestamps_ns` 自动估算帧率；需要强制帧率或覆盖旧
 
 ```bash
 ros2 run quest3_robot_data export_episode_videos \
-  /home/mypc/Documents/pyw/projects/quest3_collect/data/dual_vr_episodes/episode_00000.hdf5 \
+  /home/mypc/Documents/pyw/projects/quest3_collect/data/dual_vr_episodes/task_name/episode_00000.hdf5 \
   --fps 30 --overwrite
 ```
