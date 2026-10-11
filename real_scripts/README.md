@@ -239,6 +239,8 @@ Quest Browser 打开 `http://localhost:8765`，点击“连接”“进入 VR”
 
 双臂启动使用 `hardware_dual_teleop.yaml + dual_arm.yaml`，录制双腕 RGB、front/side RGB-D 及双臂状态/action，保存四份外参与换算汇总元数据。
 
+双臂启动脚本会用 ADB 模拟接近传感器闭合，保持 Quest 在摘下后仍运行；退出脚本时恢复物理接近传感器。先戴头显启动 Quest Browser 的 WebXR 现实透视会话，再把头显稳放在摄像头可持续追踪左右手柄、扬声器能听到的位置。左手 Y / 右手 B 切换录制；两声升调表示录制器确认开始，两声降调表示确认停止，三声低调表示录制中断或请求被拒绝。异常退出后执行 `bash real_scripts/quest_keep_awake.sh off` 恢复接近传感器。
+
 双臂 episode 保存到 `data/dual_vr_episodes/task_name/episode_00000.hdf5`。`task_name` 由 `--task` 转成小写、将空格替换为下划线；例如 `Pick Up Cube` 对应 `pick_up_cube`。每个任务目录独立编号。
 
 左右手柄分别控制左右 UR：`1:1` 相对位姿、`0.45 m/s`、约 `3.0 rad/s`、双臂夹爪速度 `255/255`、力度 `20/255`。握住侧握把后，各手柄 `gripSpace` 相对偏移按 X 同向、Y/Z 反向映射到各自当时的 Tool/TCP 坐标系；头显和 front 相机朝向不参与运动方向换算。双臂目标在 front 相机坐标中小于 `0.20 m` 时会同时停止；分别松开并重新按住侧握把后才会恢复。单臂脚本仍使用 `hardware_left_teleop.yaml` 中的夹爪速度 `20/255`。

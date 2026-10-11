@@ -38,6 +38,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True, type=Path)
     parser.add_argument("--skip-connectivity", action="store_true")
+    parser.add_argument("--skip-camera-check", action="store_true",
+                        help="Do not query RealSense devices; use when another process owns them")
     args = parser.parse_args()
     path = args.config.expanduser().resolve()
     config = yaml.safe_load(path.read_text(encoding="utf-8"))
@@ -130,7 +132,7 @@ def main() -> None:
         failures.append("one or more Realsense serial numbers are not configured")
     if len(configured_serials) != len(config.get("cameras", {})):
         failures.append("Realsense serial numbers must be unique")
-    if not args.skip_connectivity:
+    if not args.skip_connectivity and not args.skip_camera_check:
         try:
             connected = connected_realsense_serials()
             missing = configured_serials - connected
@@ -138,6 +140,7 @@ def main() -> None:
                 failures.append(f"Realsense devices not connected: {sorted(missing)}")
         except Exception as exc:
             failures.append(f"cannot enumerate Realsense devices: {exc}")
+    if not args.skip_connectivity:
         try:
             # The first invocation may need to launch the local ADB daemon;
             # Quest USB enumeration commonly exceeds three seconds then.  Do
@@ -164,7 +167,10 @@ def main() -> None:
         print("PREFLIGHT WARNINGS")
         for warning in warnings:
             print(f"  - {warning}")
-    print("PREFLIGHT PASS: handedness, serial numbers and connectivity are valid")
+    if args.skip_camera_check:
+        print("PREFLIGHT PASS: robot/Quest connectivity valid; camera enumeration skipped")
+    else:
+        print("PREFLIGHT PASS: handedness, serial numbers and connectivity are valid")
     print(f"MOTION GATE: {'ENABLED — real robot can move' if motion else 'receive-only; robot cannot move'}")
 
 

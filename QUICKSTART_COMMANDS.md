@@ -130,7 +130,7 @@ ros2 run quest3_robot_data calibrate_dual_camera_charuco \
 
 ```bash
 real_scripts/start_left_vr_teleop.sh --confirm MOVE_LEFT_ARM \
-  --task "将红色积木放入蓝色容器"
+  --task "pick place"
 ```
 
 头显中打开 `http://localhost:8765`，点击“连接”→“进入现实透视”。左手柄侧握把为左臂位姿离合；按住后先保持静止完成锚定，再移动/旋转手柄。左扳机独立控制左夹爪：按住缓慢合拢，松开缓慢张开。
@@ -161,8 +161,63 @@ MOTION GATE: ENABLED
 
 ```bash
 real_scripts/start_dual_vr_teleop.sh --confirm MOVE_BOTH_ARMS \
-  --task "双臂协作将物体放入指定区域"
+  --task "pick place"
 ```
+
+启动脚本通过 ADB 保持 Quest 唤醒，并在脚本退出时恢复接近传感器。戴头显在 Quest Browser 打开 `http://localhost:8765`，点击“连接”→“进入现实透视”；确认左右手柄均被追踪后，先松开两侧握把，再摘下头显并把它稳放在能看见两只手柄的位置。头显仍须通电，浏览器会话须保持运行。若手柄失去追踪，双臂会停止，录制会中断。Quest 扬声器需在操作者听得到的位置。
+
+摘下后直接用手柄遥操；左手 **Y** 或右手 **B** 切换录制。录制器确认开始时播放两声升调，确认停止时播放两声降调；录制中断或开始被拒绝时播放三声低调。提示音从 Quest 扬声器播放，依据录制器回传状态，不以按键动作代替确认。若启动脚本异常终止，可执行 `bash real_scripts/quest_keep_awake.sh off` 恢复接近传感器；手动保持唤醒可执行 `bash real_scripts/quest_keep_awake.sh on`。两者均要求 Quest 已通过 ADB 连接。
+
+### 与 safety 同时运行：无相机双臂遥操
+
+先在 `../safety` 独立启动检测服务，由它独占 front/side：
+
+```bash
+cd ../safety
+/home/mypc/anaconda3/envs/safety/bin/python \
+  real_scripts/live_obstacle_detection.py --no-browser --no-lingbot-depth
+```
+
+随后在本项目另一个终端运行专用脚本：
+
+```bash
+real_scripts/start_dual_vr_teleop_no_cameras.sh --confirm MOVE_BOTH_ARMS
+```
+
+该脚本启动 Quest WebXR、位姿映射、双臂 RTDE 控制以及 safety Python 环境中的
+QP-CBF 计算进程；预检不会查询 RealSense，也不会启动任何相机节点或 episode
+录制器。Quest 使用现实透视，录制按钮会禁用。右手柄 **A 键**按一次开启避障，
+再按一次关闭；切换后松开侧握把再按住。头显显示开关状态和提示。
+避障模式仅保留最新手柄目标；每轮从当前机械臂反馈生成一条受 RTDE 单步限制的
+指令，使用 safety 的固定点与扫掠路径检查。未侵入 OBB 安全边界、双臂间距也安全时，
+直接发送该单步关节指令，不运行 QP，也不逐步暂停；检测到风险时才暂停旧指令，
+重新读取机械臂反馈和最新手柄目标，并调用 safety 的 QP-CBF 优化本步指令。
+结果返回时会检查最新手柄指令是否仍与该单步指令一致、关节反馈是否漂移；
+过时结果直接丢弃，再从最新输入继续判断。
+避障默认每 `50 ms` 计划一条动作；手柄目标的平移/旋转限幅按这个周期换算，
+不再把 `125 Hz` 的单次 `servoL` 限幅直接用于整条避障动作。最终关节步长仍受
+`safety` 的关节速度限制，并逐步执行固定点与扫掠路径检查。
+更新脚本后请退出旧 WebXR 会话并刷新 Quest Browser 页面，确认显示 `passthrough-v5`。
+专用遥操设置了 `obstacle_avoidance.ignore_snapshot_age: true`：超过 `2.0 s` 的快照
+仍会用于 OBB 检查和优化，**不会仅因采集时间过期而停住动作**。如果检测服务持续
+发布旧场景，机械臂也会依据旧障碍物位置运动；其他 safety 程序仍保留 `2.0 s`
+限时。优化失败、服务不可用、标定不一致等运行错误会
+丢弃本次动作并保持避障开启；下一次新手柄输入会重新检查、必要时重新优化。
+恢复前不会发送未经验证的动作，也不会切回普通遥操；手动按 A 才关闭避障。
+头显显示暂停及恢复提示。普通双臂脚本不启用 A 键避障。
+避障启用或计算失败的具体原因和堆栈会出现在专用脚本所在终端的 `pose_mapper` 或
+`teleop_avoidance_server` 日志中，便于排查。
+专用脚本直接使用当前项目的 Python 源码及 launch 文件；已有 ROS 安装包时，
+无需为了新增的 `--skip-camera-check` 参数先重新构建。若 safety 环境不在默认路径，
+启动前设置 `SAFETY_PYTHON` 为其 Python 可执行文件。避障计算进程默认使用
+`127.0.0.1:8768`；若该端口已被占用，可在启动命令前设置 `QUEST3_AVOIDANCE_PORT=8769`，
+脚本会让计算进程与遥操客户端使用同一端口。safety 检测服务仍使用 `8766`。
+退出或终止专用遥操脚本时，它会停止自己启动的避障计算进程；独立运行的 safety
+检测服务仍由其原终端管理。
+需要相机和录制时，停止此脚本及 safety 的相机占用后再使用上面的常规启动脚本。
+两种遥操脚本共用机器人 RTDE 和 Quest 的 `8765` 端口，不能同时运行；第二个脚本
+会在启动前报错退出。常规采集脚本会显式关闭避障模式，照常启动四路相机与录制器；
+专用避障脚本不会启动相机或录制器，且其环境变量不会写回调用它的终端。
 
 - 左手柄侧握把：左臂相对位姿遥操；左扳机：左夹爪。
 - 右手柄侧握把：右臂相对位姿遥操；右扳机：右夹爪。
@@ -174,7 +229,7 @@ real_scripts/start_dual_vr_teleop.sh --confirm MOVE_BOTH_ARMS \
 
 进入现实透视后，必须等左右手柄都被追踪，双臂遥操和录制才会就绪。任一手柄失联或追踪超时，两臂立即撤销运动使能、当前录制停止；恢复追踪后先松开两侧握把，再重新按住锚定。网页与头显会提示手柄未就绪，录制器会拒绝缺手柄的开始请求。
 
-录制：左手柄 **Y 键**、右手柄 **B 键**，或网页“开始录制/停止并保存”按钮均可切换。退出 VR、网页断开或终端 `Ctrl-C` 会停止并保存当前 episode。
+录制：左手柄 **Y 键**、右手柄 **B 键**，或网页“开始录制/停止并保存”按钮均可切换。头显摘下后用声音辨认已确认的录制状态；退出 VR、网页断开或终端 `Ctrl-C` 会停止并保存当前 episode。
 
 双臂启动脚本使用 `hardware_dual_teleop.yaml + dual_arm.yaml`，episode 保存 front/side RGB-D、左右腕 RGB、双臂关节状态、commanded action 和夹爪状态/命令，并嵌入四份外参与双臂换算汇总。`dual_arm_front_only.yaml` 仅保留为无 side 相机时的临时配置。
 
@@ -182,7 +237,7 @@ real_scripts/start_dual_vr_teleop.sh --confirm MOVE_BOTH_ARMS \
 
 Quest 头显使用 WebXR `immersive-ar` 现实透视：背景透明，可看到真实工作场景；视野上方保留随头部移动的录制状态、计时、Y/B 操作提示和录制中断原因。front / left wrist / right wrist 三路相机画面暂不显示，头显页面不再请求预览 JPEG。相机采集与 episode 保存不受影响：front RGB 源图为 `1280×720@30`，深度为 `640×480@30`；录制器仍将 front RGB 与深度写入 `640×480` HDF5 数据格式，腕部数据不变。
 
-需在 Quest Browser 中通过 `http://localhost:8765`（ADB 转发）或 HTTPS 打开，并允许进入沉浸式会话。若浏览器不支持现实透视，页面会显示错误提示。更新代码后按第 1 节重建并重启遥操脚本，退出旧会话、刷新头显页面；页面版本应为 `passthrough-v2`。
+需在 Quest Browser 中通过 `http://localhost:8765`（ADB 转发）或 HTTPS 打开，并允许进入沉浸式会话。若浏览器不支持现实透视，页面会显示错误提示。更新代码后按第 1 节重建并重启遥操脚本，退出旧会话、刷新头显页面；页面版本应为 `passthrough-v6`。
 
 导出视频默认每个已保存的同步样本写一帧、固定 `30 FPS`；若录制期间同步采样掉帧，视频会更短而不会插入重复帧。覆盖已有导出视频时追加 `--overwrite`。
 
@@ -227,6 +282,15 @@ ros2 run quest3_robot_data inspect_episode \
 ros2 run quest3_robot_data export_episode_videos \
   data/dual_vr_episodes/task_name/episode_00000.hdf5
 ```
+
+一次导出某个任务目录下的全部 HDF5（每个 episode 各生成四路 MP4）：
+
+```bash
+/usr/bin/python3 scripts/export_task_episode_videos.py \
+  data/dual_vr_episodes/task_name
+```
+
+默认跳过四路视频均存在且帧数正确的 episode；中断后直接重跑会重新导出未完成的 episode。需要强制重新导出全部时追加 `--overwrite`。修改代码并重建 ROS 包后，也可使用 `ros2 run quest3_robot_data export_task_episode_videos <任务目录>`。
 
 默认输出：
 

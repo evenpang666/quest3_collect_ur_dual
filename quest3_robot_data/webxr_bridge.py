@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
+import os
 import ssl
 import threading
 import time
@@ -29,9 +31,13 @@ class QuestWebNode(Node):
         jpeg_quality: int,
         stream_fps: float,
         wrist_stream_fps: float,
+        recording_enabled: bool = True,
     ):
         super().__init__("quest3_webxr_bridge")
-        self.controller_pub = self.create_publisher(String, "/quest3/controllers", 10)
+        # Only the newest hand pose matters to teleoperation; queued poses are
+        # stale actions by the time avoidance finishes projecting a command.
+        self.controller_pub = self.create_publisher(
+            String, "/quest3/controllers", 1 if os.environ.get("QUEST3_ENABLE_AVOIDANCE") == "1" else 10)
         self.record_pub = self.create_publisher(Bool, "/quest3/recording", 10)
         self.status_sub = self.create_subscription(String, "/quest3/system_status", self._status, 10)
         self.safety_sub = self.create_subscription(String, "/quest3/safety_event", self._safety_event, 10)
@@ -45,7 +51,12 @@ class QuestWebNode(Node):
         self.last_image_time = {camera: 0.0 for camera in self.min_image_period}
         self._lock = threading.Lock()
         self.latest_jpegs: dict[str, bytes | None] = {camera: None for camera in self.min_image_period}
-        self.status: dict[str, Any] = {"recording": False}
+        self.recording_enabled = bool(recording_enabled)
+        self.status: dict[str, Any] = {
+            "recording": False,
+            "recording_available": self.recording_enabled,
+            "avoidance_available": os.environ.get("QUEST3_ENABLE_AVOIDANCE") == "1",
+        }
         topics = {
             "front": front_topic,
             "left_wrist": left_wrist_topic,
@@ -81,6 +92,9 @@ class QuestWebNode(Node):
             if isinstance(value, dict):
                 with self._lock:
                     self.status.update(value)
+                    if not self.recording_enabled:
+                        self.status["recording"] = False
+                        self.status["recording_available"] = False
         except json.JSONDecodeError:
             pass
 
@@ -117,14 +131,13 @@ class QuestWebNode(Node):
         self.controller_pub.publish(message)
 
     def set_recording(self, enabled: bool) -> None:
+        if not self.recording_enabled:
+            return
         message = Bool()
         message.data = bool(enabled)
         self.record_pub.publish(message)
-        with self._lock:
-            self.status["recording"] = bool(enabled)
-            if enabled:
-                self.status["recording_interrupted"] = None
-                self.status["safety_event"] = None
+        # The recorder publishes the accepted state.  Do not acknowledge a
+        # button press here: tracking or writer errors can reject recording.
 
     def snapshot(self, camera: str | None = None) -> tuple[bytes | None, dict[str, Any]]:
         with self._lock:
@@ -145,7 +158,9 @@ async def camera_image(request: web.Request) -> web.Response:
 
 async def websocket(request: web.Request) -> web.WebSocketResponse:
     node: QuestWebNode = request.app["node"]
-    ws = web.WebSocketResponse(heartbeat=5.0, max_msg_size=64 * 1024)
+    # The page sends keepalives; aiohttp 3.8 heartbeat pings can race a
+    # closing headset connection and report an unhandled transport error.
+    ws = web.WebSocketResponse(receive_timeout=10.0, max_msg_size=64 * 1024)
     await ws.prepare(request)
     clients: set[web.WebSocketResponse] = request.app["clients"]
     clients.add(ws)
@@ -164,7 +179,12 @@ async def websocket(request: web.Request) -> web.WebSocketResponse:
             elif payload.get("type") == "record":
                 node.set_recording(bool(payload.get("recording")))
             _, status = node.snapshot()
-            await ws.send_json({"type": "status", **status})
+            try:
+                await ws.send_json({"type": "status", **status})
+            except (ConnectionResetError, RuntimeError):
+                break
+    except asyncio.TimeoutError:
+        pass
     finally:
         clients.discard(ws)
         node.publish_pose({"type": "pose", "left": None, "right": None, "disconnected": True})
@@ -179,6 +199,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--front-topic", default="/front_camera/color/image_raw")
+    parser.add_argument("--recording-enabled", type=str.lower, choices=("true", "false"), default="true")
     parser.add_argument("--left-wrist-topic", default="/left_wrist_camera/camera/color/image_raw")
     parser.add_argument("--right-wrist-topic", default="/right_wrist_camera/camera/color/image_raw")
     parser.add_argument("--stream-fps", type=float, default=15.0)
@@ -200,6 +221,7 @@ def main(argv: list[str] | None = None) -> None:
         args.jpeg_quality,
         args.stream_fps,
         args.wrist_stream_fps,
+        args.recording_enabled == "true",
     )
     ros_thread = threading.Thread(target=rclpy.spin, args=(node,), daemon=True)
     ros_thread.start()

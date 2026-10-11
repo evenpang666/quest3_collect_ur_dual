@@ -29,6 +29,19 @@ if [[ -n "${CONDA_PREFIX:-}" ]]; then
   exit 2
 fi
 
+# Both launch modes control the same robots and Quest bridge. Hold the lock for
+# this launch (and its children) so a second mode cannot start concurrently.
+exec {TELEOP_LOCK_FD}>/tmp/quest3_dual_vr_teleop.lock
+if ! flock -n "$TELEOP_LOCK_FD"; then
+  echo "ERROR: another dual-arm Quest teleoperation script is already running." >&2
+  exit 2
+fi
+
+# Keep the collection path ordinary even if avoidance variables were exported
+# in the caller's shell. The dedicated script sets these only for its children.
+export QUEST3_ENABLE_AVOIDANCE=0
+unset QUEST3_AVOIDANCE_RUNTIME_URL QUEST3_AVOIDANCE_PARENT_PID
+
 source /opt/ros/humble/setup.bash
 source "$HOME/ros2_ws/install/setup.bash"
 set -u
@@ -45,8 +58,17 @@ cleanup() {
   for task_pid in "${SYSTEM_PID:-}" "${CAMERA_PID:-}"; do
     [[ -n "$task_pid" ]] && wait "$task_pid" 2>/dev/null || true
   done
+  if [[ "${QUEST_KEEP_AWAKE:-0}" == 1 ]]; then
+    bash "$PROJECT_DIR/real_scripts/quest_keep_awake.sh" off || \
+      echo "WARNING: could not restore Quest proximity sensor; run quest_keep_awake.sh off." >&2
+  fi
 }
 trap cleanup INT TERM EXIT
+
+# Quest must keep its WebXR session and controller tracking active off-face.
+bash "$PROJECT_DIR/real_scripts/quest_keep_awake.sh" on
+QUEST_KEEP_AWAKE=1
+echo "Quest proximity sensor overridden for this teleoperation session."
 
 echo "Starting both wrist cameras and front/side D455..."
 ros2 launch quest3_robot_data realsense_four.launch.py \
@@ -56,6 +78,8 @@ echo "Waiting 4 seconds for RealSense initialization..."
 sleep 4
 
 echo "Quest: open http://localhost:8765, connect, then enter VR."
+echo "After both controllers track, remove the headset and place it facing the controllers."
+echo "Y/B toggles recording: rising tones=start, falling tones=stop, low tones=interrupted."
 echo "Left controller -> left UR; right controller -> right UR."
 echo "Hold a controller side-grip to move that arm; each trigger operates its gripper."
 echo "Ctrl-C stops both servo loops and all nodes."

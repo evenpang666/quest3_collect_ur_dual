@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import queue
 import threading
 import time
@@ -20,11 +21,10 @@ from std_msgs.msg import Bool, Float32, Float64MultiArray, String
 
 from .pose_mapper import _load_calibration, _resolve
 from .robotiq_socket import Robotiq2FClient
+from .target_limiter import limit_cartesian_target
 from .transforms import (
     matrix_to_quaternion,
-    matrix_to_rotvec,
     matrix_to_ur_pose,
-    rotvec_to_matrix,
     transform,
     ur_pose_to_matrix,
 )
@@ -97,8 +97,11 @@ class ArmWorker(threading.Thread):
     ):
         super().__init__(name=f"rtde-{name}", daemon=True)
         self.node, self.name, self.config, self.common = node, name, config, common
+        self.avoidance_available = bool(common.get("avoidance_available", False))
+        self.avoidance_mode = False
         self._lock = threading.Lock()
         self.target: np.ndarray | None = None
+        self.joint_target: np.ndarray | None = None
         self.target_time = 0.0
         self.enabled = False
         # A protective stop/E-stop terminates the injected RTDE control
@@ -154,12 +157,53 @@ class ArmWorker(threading.Thread):
             return
         p, q = message.pose.position, message.pose.orientation
         with self._lock:
+            if self.avoidance_mode:
+                return
             self.target = transform([p.x, p.y, p.z], [q.x, q.y, q.z, q.w])
+            self.joint_target = None
             self.target_time = time.monotonic()
+
+    def set_joint_target(self, message: Float64MultiArray) -> None:
+        if not self.avoidance_available:
+            return
+        value = np.asarray(message.data, dtype=float)
+        if value.shape != (6,) or not np.isfinite(value).all():
+            self.status = "rejected avoidance joint target"
+            return
+        with self._lock:
+            if not self.avoidance_mode:
+                return
+            self.joint_target = value
+            self.target = None
+            self.target_time = time.monotonic()
+
+    def hold_avoidance(self) -> None:
+        """Stop a pending projected step without treating it as clutch release."""
+        if not self.avoidance_available:
+            return
+        with self._lock:
+            self.target = None
+            self.joint_target = None
+            self.target_time = 0.0
+            self.enabled = False
+
+    def set_avoidance_mode(self, enabled: bool) -> None:
+        if not self.avoidance_available:
+            return
+        with self._lock:
+            self.avoidance_mode = bool(enabled)
+            self.target = None
+            self.joint_target = None
+            self.target_time = 0.0
+            self.enabled = False
 
     def set_enabled(self, value: bool) -> None:
         with self._lock:
             requested = bool(value)
+            if not requested:
+                self.target = None
+                self.joint_target = None
+                self.target_time = 0.0
             if not self._rearm_required:
                 self.enabled = requested
             elif not requested:
@@ -181,6 +225,7 @@ class ArmWorker(threading.Thread):
         with self._lock:
             self.enabled = False
             self.target = None
+            self.joint_target = None
             self.target_time = 0.0
             self._rearm_required = True
             self._released_since_reconnect = False
@@ -261,6 +306,7 @@ class ArmWorker(threading.Thread):
                 )
                 attempt = 0
                 iteration = 0
+                active_mode = None
                 last_safety_check = 0.0
                 while not self.stopping.is_set():
                     period_start = control.initPeriod() if control else None
@@ -283,35 +329,56 @@ class ArmWorker(threading.Thread):
                             raise RuntimeError("UR protective stop is active")
                         self._clear_safety_event()
                     with self._lock:
-                        enabled, target, age = self.enabled, self.target, time.monotonic() - self.target_time
-                    valid = self.motion_enabled and enabled and target is not None and age <= timeout
+                        enabled, target, joint_target, avoidance_mode, age = (
+                            self.enabled, self.target, self.joint_target, self.avoidance_mode,
+                            time.monotonic() - self.target_time)
+                    if avoidance_mode:
+                        target = None
+                    else:
+                        joint_target = None
+                    valid = self.motion_enabled and enabled and (target is not None or joint_target is not None) and age <= timeout
                     if valid:
-                        position = target[:3, 3]
-                        if (
+                        mode = "joint" if joint_target is not None else "cartesian"
+                        if active and mode != active_mode:
+                            control.servoStop()
+                            active = False
+                        active_mode = mode
+                        if joint_target is not None:
+                            actual_q = np.asarray(receive.getActualQ(), dtype=float)
+                            max_step = float(self.common.get("avoidance_joint_max_step_rad", 0.025))
+                            # Reject a target whose source feedback no longer
+                            # matches the real robot. Never clip an optimized
+                            # CBF action after the safety check.
+                            if np.max(np.abs(joint_target - actual_q)) > max_step + 0.02:
+                                valid = False
+                                self.status = "avoidance target expired"
+                            else:
+                                servo_ok = control.servoJ(
+                                    joint_target.tolist(), float(self.common["speed"]),
+                                    float(self.common["acceleration"]), dt,
+                                    float(self.common["lookahead_time"]), float(self.common["gain"]))
+                                if servo_ok is False:
+                                    self._report_safety_event("rtde_control_lost", "UR RTDE control script is not running")
+                                    raise RuntimeError("UR RTDE control script is not running")
+                                active = True
+                                self.status = "avoidance enabled"
+                        else:
+                            position = target[:3, 3]
+                        if target is not None and (
                             self.workspace_min is not None
                             and self.workspace_max is not None
                             and (np.any(position < self.workspace_min) or np.any(position > self.workspace_max))
                         ):
                             valid = False
                             self.status = "workspace stop"
-                        else:
+                        elif target is not None:
                             actual = np.asarray(receive.getActualTCPPose(), dtype=float)
                             actual_matrix = ur_pose_to_matrix(actual)
-                            safe_target = target.copy()
-                            delta = safe_target[:3, 3] - actual[:3]
-                            max_jump = float(self.common["max_target_jump_m"])
-                            norm = float(np.linalg.norm(delta))
-                            if norm > max_jump:
-                                safe_target[:3, 3] = actual[:3] + delta / norm * max_jump
-                            rotation_delta = safe_target[:3, :3] @ actual_matrix[:3, :3].T
-                            rotation_vector = matrix_to_rotvec(rotation_delta)
-                            rotation_norm = float(np.linalg.norm(rotation_vector))
-                            max_rotation = float(self.common["max_target_jump_rad"])
-                            if rotation_norm > max_rotation:
-                                safe_target[:3, :3] = (
-                                    rotvec_to_matrix(rotation_vector / rotation_norm * max_rotation)
-                                    @ actual_matrix[:3, :3]
-                                )
+                            safe_target = limit_cartesian_target(
+                                actual_matrix, target,
+                                float(self.common["max_target_jump_m"]),
+                                float(self.common["max_target_jump_rad"]),
+                            )
                             command = matrix_to_ur_pose(safe_target)
                             # ur_rtde reports a robot-side URScript loss (for
                             # example after an E-stop/protective stop) by
@@ -385,6 +452,10 @@ class RTDEServoNode(Node):
         super().__init__("quest3_rtde_servo")
         common = dict(config["rtde"])
         common["control_hz"] = config.get("control_hz", 125.0)
+        common["avoidance_available"] = os.environ.get("QUEST3_ENABLE_AVOIDANCE") == "1"
+        avoid = config.get("obstacle_avoidance", {})
+        common["avoidance_joint_max_step_rad"] = float(avoid.get("joint_speed_rad_s", 0.5)) * float(
+            avoid.get("period_s", 0.05))
         motion_enabled = bool(common.get("enable_motion", False))
         debug_bypass = bool(config.get("debug", {}).get("allow_uncalibrated_receive_only", False))
         if debug_bypass and motion_enabled:
@@ -430,12 +501,27 @@ class RTDEServoNode(Node):
                 self._publish_safety_event,
             )
             self.workers[name] = worker
-            self._subscriptions.extend([
+            subscriptions = [
                 self.create_subscription(PoseStamped, arm["target_topic"], worker.set_target, 10),
                 self.create_subscription(Bool, arm["enabled_topic"], lambda m, w=worker: w.set_enabled(m.data), 10),
                 self.create_subscription(Float32, arm["gripper_command_topic"], lambda m, w=worker: w.command_gripper(m.data), 10),
-            ])
+            ]
+            if common["avoidance_available"]:
+                subscriptions.append(self.create_subscription(
+                    Float64MultiArray, arm.get("avoidance_joint_target_topic", f"/{name}/avoidance_joint_target"),
+                    worker.set_joint_target, 10))
+                subscriptions.append(self.create_subscription(
+                    Bool, f"/{name}/avoidance_hold",
+                    lambda m, w=worker: w.hold_avoidance() if m.data else None, 10))
+            self._subscriptions.extend(subscriptions)
+        if common["avoidance_available"]:
+            self._subscriptions.append(self.create_subscription(
+                Bool, "/quest3/avoidance_mode", self._set_avoidance_mode, 10))
         self.create_timer(0.2, self._status)
+
+    def _set_avoidance_mode(self, message: Bool) -> None:
+        for worker in self.workers.values():
+            worker.set_avoidance_mode(message.data)
 
     def _publish_safety_event(self, arm: str, event: str, detail: str) -> None:
         message = String()

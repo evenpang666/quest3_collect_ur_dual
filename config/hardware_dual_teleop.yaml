@@ -72,3 +72,9 @@ rtde:
   gripper_port: 63352
   gripper_speed: 255
   gripper_force: 20
+
+obstacle_avoidance:
+  # Dedicated no-camera teleop keeps using the last published OBBs even when
+  # their capture age exceeds safety.stale_timeout_s. Other safety callers
+  # retain the project's 2.0 s limit.
+  ignore_snapshot_age: true

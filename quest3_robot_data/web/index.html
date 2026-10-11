@@ -9,8 +9,8 @@ button{font-size:1rem;padding:.75rem 1rem;margin:.3rem}.danger{background:#9d263
 </style>
 <main>
   <h1>Quest 3 → UR7e 双臂遥操作</h1>
-  <p class="hint">页面版本：passthrough-v2（现实透视 + 录制提示）</p>
-  <p class="hint">左手柄→左臂，右手柄→右臂。按住侧握把才移动对应机械臂；扳机独立控制对应夹爪：按住缓慢合拢，松开缓慢张开。左手 Y 或右手 B 键切换录制，左右摇杆按下分别重新锚定。</p>
+  <p class="hint">页面版本：passthrough-v6（离头操作 + 录制提示音）</p>
+  <p class="hint">左手柄→左臂，右手柄→右臂。按住侧握把才移动对应机械臂；扳机独立控制对应夹爪。专用模式下右手 A 键切换避障，切换后松开侧握把再按住。左右摇杆按下分别重新锚定；常规模式仍可用 Y/B 切换录制。</p>
   <button id="connect">连接</button><button id="enter" disabled>进入现实透视</button>
   <button id="record" class="danger" disabled>开始录制</button>
   <button id="recenterLeft" disabled>左臂重新锚定</button><button id="recenterRight" disabled>右臂重新锚定</button>
@@ -19,10 +19,31 @@ button{font-size:1rem;padding:.75rem 1rem;margin:.3rem}.danger{background:#9d263
 <script>
 (()=>{
 const $=id=>document.getElementById(id), status=$('status'), connect=$('connect'), enter=$('enter'), record=$('record');
-let ws,session,space,gl,layer,renderer,lastSent=0,recording=false,recordingStartMs=null,recordingInterrupted='';
+let ws,session,space,gl,layer,renderer,lastSent=0,recording=false,recordingAvailable=false,recordingStartMs=null,recordingInterrupted='',keepaliveTimer=null;
 let controllerReady=false;
+let audioContext=null,lastConfirmedRecording=null,lastConfirmedInterruption='';
 let recenterLeft=false,recenterRight=false,lastRecordLeft=false,lastRecordRight=false;
+let avoidanceAvailable=false,avoidanceEnabled=false,lastAvoidanceA=false,pendingAvoidanceToggle=false;
+let avoidanceNotice='',avoidanceNoticeUntil=0,lastAvoidanceEventSeq=null;
 const set=t=>status.textContent=t;
+function primeAudio(){
+ try{
+  audioContext??=new (window.AudioContext||window.webkitAudioContext)();
+  if(audioContext.state==='suspended')audioContext.resume().catch(()=>{});
+ }catch(e){console.warn('录制提示音不可用',e)}
+}
+function playCue(kind){
+ if(!audioContext||audioContext.state!=='running')return;
+ const notes=kind==='start'?[[880,0],[1175,.16]]:kind==='stop'?[[880,0],[590,.16]]:[[440,0],[440,.18],[330,.36]];
+ for(const [frequency,delay] of notes){
+  const begin=audioContext.currentTime+delay,osc=audioContext.createOscillator(),gain=audioContext.createGain();
+  osc.type='sine';osc.frequency.value=frequency;
+  gain.gain.setValueAtTime(.0001,begin);
+  gain.gain.exponentialRampToValueAtTime(.28,begin+.015);
+  gain.gain.exponentialRampToValueAtTime(.0001,begin+.13);
+  osc.connect(gain);gain.connect(audioContext.destination);osc.start(begin);osc.stop(begin+.14);
+ }
+}
 function recordingElapsed(){return recording&&recordingStartMs!==null?(performance.now()-recordingStartMs)/1000:0}
 function formatDuration(seconds){const total=Math.max(0,Math.floor(seconds));return `${String(Math.floor(total/60)).padStart(2,'0')}:${String(total%60).padStart(2,'0')}`}
 function applyRecordingState(value,elapsed,interrupted){const next=!!value;if(interrupted===null)recordingInterrupted='';else if(typeof interrupted==='string'&&interrupted)recordingInterrupted=interrupted;if(next){recordingInterrupted='';const seconds=Number(elapsed);if(Number.isFinite(seconds))recordingStartMs=performance.now()-Math.max(0,seconds)*1000;else if(!recording)recordingStartMs=performance.now()}else recordingStartMs=null;recording=next;record.textContent=next?'停止并保存':'开始录制'}
@@ -30,16 +51,42 @@ function button(src,i){return src?.gamepad?.buttons?.[i]?.value||0}
 function controller(src,frame){
   if(!src?.gripSpace)return null; const pose=frame.getPose(src.gripSpace,space); if(!pose)return null;
   const p=pose.transform.position,q=pose.transform.orientation;
-  return {position:[p.x,p.y,p.z],orientation:[q.x,q.y,q.z,q.w],trigger:button(src,0),squeeze:button(src,1),thumbstick:button(src,3),secondary:button(src,5)};
+  return {position:[p.x,p.y,p.z],orientation:[q.x,q.y,q.z,q.w],trigger:button(src,0),squeeze:button(src,1),thumbstick:button(src,3),primary:button(src,4),secondary:button(src,5)};
 }
 function send(value){if(ws?.readyState===WebSocket.OPEN)ws.send(JSON.stringify(value))}
-function setRecording(value){if(value&&!controllerReady){set('左右手柄必须同时连接并被追踪，才能开始录制。');return}applyRecordingState(value,undefined,value?null:undefined);send({type:'record',recording:value})}
+function setRecording(value){if(!recordingAvailable)return;if(value&&!controllerReady){set('左右手柄必须同时连接并被追踪，才能开始录制。');playCue('error');return}send({type:'record',recording:value})}
 function connectWs(){
   if(ws?.readyState===WebSocket.OPEN)return;
   ws=new WebSocket(`${location.protocol==='https:'?'wss':'ws'}://${location.host}/ws`);
-  ws.onopen=()=>{connect.disabled=true;enter.disabled=false;record.disabled=true;set('服务器已连接；进入现实透视并确认左右手柄均被追踪。')};
-  ws.onclose=()=>{controllerReady=false;connect.disabled=false;enter.disabled=true;record.disabled=true;applyRecordingState(false,undefined,'连接断开：录制已停止');set('连接断开：录制已停止，机械臂 watchdog 将停止运动。')};
-  ws.onmessage=e=>{const d=JSON.parse(e.data);if(d.type==='status'){applyRecordingState(d.recording,d.recording_elapsed_sec,d.recording_interrupted);const interrupt=recordingInterrupted?`\n⚠ 录制中断: ${recordingInterrupted}`:'';const missing=Array.isArray(d.controller_missing)?d.controller_missing.join('、'):'';set(`VR连接: 是\n手柄就绪: ${d.controller_ready?'是':`否${missing?`（缺少 ${missing}）`:''}`}\n录制: ${recording?'进行中':'未录制'} ${recording?formatDuration(recordingElapsed()):''}${interrupt}\n同步帧: ${d.synced_frames??'-'}\n丢帧: ${d.dropped_frames??'-'}\n左臂: ${d.left_arm??'等待'} / ${d.left_arm_rtde??'RTDE等待'}\n左夹爪: ${d.left_arm_gripper??'等待'}\n右臂: ${d.right_arm??'等待'} / ${d.right_arm_rtde??'RTDE等待'}\n右夹爪: ${d.right_arm_gripper??'未连接'}\n双臂距离保护: ${d.dual_tcp_guard??'-'}`)}};
+  ws.onopen=()=>{connect.disabled=true;enter.disabled=false;record.disabled=true;clearInterval(keepaliveTimer);keepaliveTimer=setInterval(()=>send({type:'keepalive'}),2000);set('服务器已连接；进入现实透视并确认左右手柄均被追踪。')};
+  ws.onclose=()=>{if(lastConfirmedRecording)playCue('error');lastConfirmedRecording=null;lastConfirmedInterruption='';clearInterval(keepaliveTimer);keepaliveTimer=null;controllerReady=false;recordingAvailable=false;avoidanceAvailable=false;avoidanceEnabled=false;lastAvoidanceA=false;pendingAvoidanceToggle=false;lastAvoidanceEventSeq=null;connect.disabled=false;enter.disabled=true;record.disabled=true;applyRecordingState(false,undefined,'连接断开：录制已停止');set('连接断开：录制已停止，机械臂 watchdog 将停止运动。')};
+  ws.onmessage=e=>{
+   const d=JSON.parse(e.data);if(d.type!=='status')return;
+   recordingAvailable=d.recording_available!==false;
+   record.disabled=!recordingAvailable||(!controllerReady&&!recording);
+   const confirmedRecording=d.recording===true,interruption=typeof d.recording_interrupted==='string'?d.recording_interrupted:'';
+   if(lastConfirmedRecording!==null){
+    if(interruption&&interruption!==lastConfirmedInterruption)playCue('error');
+    else if(confirmedRecording!==lastConfirmedRecording)playCue(confirmedRecording?'start':'stop');
+   }
+   lastConfirmedRecording=confirmedRecording;lastConfirmedInterruption=interruption;
+   applyRecordingState(d.recording,d.recording_elapsed_sec,d.recording_interrupted);
+   avoidanceAvailable=d.avoidance_available===true;
+   avoidanceEnabled=avoidanceAvailable&&d.avoidance_enabled===true;
+   if(avoidanceAvailable&&Number.isInteger(d.avoidance_event_seq)&&d.avoidance_event_seq!==lastAvoidanceEventSeq){
+    lastAvoidanceEventSeq=d.avoidance_event_seq;
+    if(d.avoidance_event){
+     avoidanceNotice=d.avoidance_event==='enabled'?'避障已开启；松开侧握把后重新按住':
+      d.avoidance_event==='blocked'?'本次避障动作失败，已停住；避障仍开启，等待下一动作':
+      d.avoidance_event==='resumed'?'避障已恢复，继续遥操':
+      d.avoidance_event==='failed'?`避障无法开启：${d.avoidance_status||'检查实时检测'}`:'避障已关闭，普通遥操已恢复';
+     avoidanceNoticeUntil=performance.now()+4000;
+    }
+   }
+   const interrupt=recordingInterrupted?`\n⚠ 录制中断: ${recordingInterrupted}`:'';
+   const missing=Array.isArray(d.controller_missing)?d.controller_missing.join('、'):'';
+   set(`VR连接: 是\n手柄就绪: ${d.controller_ready?'是':`否${missing?`（缺少 ${missing}）`:''}`}\n录制: ${recordingAvailable?(recording?'进行中':'未录制'):'当前模式已关闭'} ${recording?formatDuration(recordingElapsed()):''}${interrupt}\n避障: ${avoidanceAvailable?(avoidanceEnabled?'开启':'关闭'):'当前模式不可用'} / ${d.avoidance_status??'等待'}\n同步帧: ${d.synced_frames??'-'}\n丢帧: ${d.dropped_frames??'-'}\n左臂: ${d.left_arm??'等待'} / ${d.left_arm_rtde??'RTDE等待'}\n左夹爪: ${d.left_arm_gripper??'等待'}\n右臂: ${d.right_arm??'等待'} / ${d.right_arm_rtde??'RTDE等待'}\n右夹爪: ${d.right_arm_gripper??'未连接'}\n双臂距离保护: ${d.dual_tcp_guard??'-'}`);
+  };
 }
 function shader(type,source){const s=gl.createShader(type);gl.shaderSource(s,source);gl.compileShader(s);if(!gl.getShaderParameter(s,gl.COMPILE_STATUS))throw Error(gl.getShaderInfoLog(s));return s}
 function program(v,f){const p=gl.createProgram();gl.attachShader(p,shader(gl.VERTEX_SHADER,v));gl.attachShader(p,shader(gl.FRAGMENT_SHADER,f));gl.linkProgram(p);return p}
@@ -64,8 +111,9 @@ function makeRenderer(){
 }
 function mul(a,b){const o=new Float32Array(16);for(let c=0;c<4;c++)for(let r=0;r<4;r++)o[c*4+r]=a[r]*b[c*4]+a[4+r]*b[c*4+1]+a[8+r]*b[c*4+2]+a[12+r]*b[c*4+3];return o}
 function updateRecordingHud(){
- const label=recordingInterrupted?'⚠ 录制已中断':(recording?`● 正在录制 ${formatDuration(recordingElapsed())}`:'未录制');
- const hint=recordingInterrupted||(!controllerReady?'等待左右手柄连接并追踪':'按左手 Y / 右手 B '+(recording?'停止并保存':'开始录制'));
+ const label=!recordingAvailable?'录制已关闭':(recordingInterrupted?'⚠ 录制已中断':(recording?`● 正在录制 ${formatDuration(recordingElapsed())}`:'未录制'));
+ const baseHint=!recordingAvailable?'当前模式不录制':(recordingInterrupted||(!controllerReady?'等待左右手柄连接并追踪':'按左手 Y / 右手 B '+(recording?'停止并保存':'开始录制')));
+ const hint=performance.now()<avoidanceNoticeUntil?avoidanceNotice:baseHint+(avoidanceAvailable?`；右手 A 避障${avoidanceEnabled?'已开':'已关'}`:'');
  const key=label+'\n'+hint;if(renderer.labelKey===key)return;renderer.labelKey=key;
  const canvas=renderer.canvas,ctx=canvas.getContext('2d');
  ctx.clearRect(0,0,canvas.width,canvas.height);
@@ -99,23 +147,27 @@ function render(frame){
 function onFrame(now,frame){
  session.requestAnimationFrame(onFrame);render(frame);
  const sources=[...session.inputSources],l=controller(sources.find(s=>s.handedness==='left'),frame),r=controller(sources.find(s=>s.handedness==='right'),frame);
- controllerReady=!!l&&!!r;record.disabled=!controllerReady&&!recording;
+ controllerReady=!!l&&!!r;record.disabled=!recordingAvailable||(!controllerReady&&!recording);
  if(l?.thumbstick>.5)recenterLeft=true;if(r?.thumbstick>.5)recenterRight=true;
  // Quest Touch's upper face buttons are Y (left) and B (right).  Toggle only
  // on a press edge, so either hand can record without repeated toggles while held.
  const recordLeft=!!(l?.secondary>.5),recordRight=!!(r?.secondary>.5);
- if((recordLeft&&!lastRecordLeft)||(recordRight&&!lastRecordRight))setRecording(!recording);
+ if(recordingAvailable&&((recordLeft&&!lastRecordLeft)||(recordRight&&!lastRecordRight)))setRecording(!recording);
  lastRecordLeft=recordLeft;lastRecordRight=recordRight;
- if(now-lastSent>=1000/90){send({type:'pose',left:l,right:r,recenter_left:recenterLeft,recenter_right:recenterRight,xr_time_ms:now});recenterLeft=false;recenterRight=false;lastSent=now}
+ const a=avoidanceAvailable&&!!(r?.primary>.5);
+ if(a&&!lastAvoidanceA&&controllerReady)pendingAvoidanceToggle=true;
+ lastAvoidanceA=a;
+ if(now-lastSent>=1000/90){send({type:'pose',left:l,right:r,recenter_left:recenterLeft,recenter_right:recenterRight,avoidance_toggle:pendingAvoidanceToggle,xr_time_ms:now});recenterLeft=false;recenterRight=false;pendingAvoidanceToggle=false;lastSent=now}
 }
 async function startVr(){
  if(session)return;
  if(!navigator.xr){set('当前浏览器没有 WebXR；请在 Quest Browser 中通过 localhost/HTTPS 打开。');return}
+ primeAudio();
  enter.disabled=true;
  try{
   session=await navigator.xr.requestSession('immersive-ar',{requiredFeatures:['local-floor']});
   session.addEventListener('end',()=>{
-   controllerReady=false;record.disabled=true;send({type:'pose',left:null,right:null});setRecording(false);session=null;
+   controllerReady=false;record.disabled=true;lastAvoidanceA=false;pendingAvoidanceToggle=false;send({type:'pose',left:null,right:null,avoidance_off:true});setRecording(false);session=null;
    enter.disabled=ws?.readyState!==WebSocket.OPEN;
    $('recenterLeft').disabled=true;$('recenterRight').disabled=true;
   });

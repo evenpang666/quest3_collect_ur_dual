@@ -1,6 +1,7 @@
 """Start the Quest bridge, mapper, RTDE backend and recorder for either mode."""
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
+from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
@@ -10,6 +11,7 @@ def generate_launch_description():
     recorder = LaunchConfiguration("recorder_config")
     output = LaunchConfiguration("output_dir")
     task_description = LaunchConfiguration("task_description")
+    start_recorder = LaunchConfiguration("start_recorder")
     front_topic = LaunchConfiguration("front_topic")
     left_wrist_topic = LaunchConfiguration("left_wrist_topic")
     right_wrist_topic = LaunchConfiguration("right_wrist_topic")
@@ -21,6 +23,7 @@ def generate_launch_description():
         DeclareLaunchArgument("recorder_config"),
         DeclareLaunchArgument("output_dir"),
         DeclareLaunchArgument("task_description"),
+        DeclareLaunchArgument("start_recorder", default_value="true"),
         DeclareLaunchArgument("front_topic", default_value="/front_camera/camera/color/image_raw"),
         DeclareLaunchArgument("left_wrist_topic", default_value="/left_wrist_camera/camera/color/image_raw"),
         DeclareLaunchArgument("right_wrist_topic", default_value="/right_wrist_camera/camera/color/image_raw"),
@@ -34,6 +37,7 @@ def generate_launch_description():
         Node(package="quest3_robot_data", executable="pose_mapper", output="screen", arguments=["--config", hardware]),
         Node(package="quest3_robot_data", executable="webxr_bridge", output="screen", arguments=[
             "--front-topic", front_topic,
+            "--recording-enabled", start_recorder,
             "--left-wrist-topic", left_wrist_topic,
             "--right-wrist-topic", right_wrist_topic,
             "--stream-fps", vr_stream_fps,
@@ -41,6 +45,7 @@ def generate_launch_description():
             "--jpeg-quality", vr_jpeg_quality,
         ]),
         Node(package="quest3_robot_data", executable="record_dataset", output="screen",
+             condition=IfCondition(start_recorder),
              arguments=[
                  "--config", recorder,
                  "--hardware-config", hardware,

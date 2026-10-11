@@ -45,6 +45,7 @@ setup(
         "preflight = quest3_robot_data.preflight:main",
         "inspect_episode = scripts.inspect_episode:main",
         "export_episode_videos = scripts.export_episode_videos:main",
+        "export_task_episode_videos = scripts.export_task_episode_videos:main",
         "export_folder_episode_videos = scripts.export_folder_episode_videos:main",
     ]},
 )

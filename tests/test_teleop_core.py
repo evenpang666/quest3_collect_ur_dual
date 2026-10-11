@@ -107,11 +107,23 @@ def test_regrip_reanchors_hand_to_current_tcp_without_target_jump():
     mapper.update(hand([0, 0, 0]), first_tcp)
     mapper.update(hand([0.1, 0, 0]), first_tcp)
     mapper.update(hand([0.1, 0, 0], squeeze=0), first_tcp)
+    # Move and rotate the hand while the clutch is open. None of these poses
+    # may become the next anchor until the clutch is pressed again.
+    paused_orientation = matrix_to_quaternion(rotvec_to_matrix([0, 0, np.pi / 4]))
+    mapper.update(hand([2, 3, 4], squeeze=0, orientation=paused_orientation), first_tcp)
     current_tcp = np.eye(4)
+    current_tcp[:3, :3] = rotvec_to_matrix([0, np.pi / 2, 0])
     current_tcp[:3, 3] = [0.3, 0.4, 0.5]
-    anchored = mapper.update(hand([4, 5, 6]), current_tcp)
+    hand_rotation = rotvec_to_matrix([0, 0, np.pi / 2])
+    orientation = matrix_to_quaternion(hand_rotation)
+    regrip_position = np.array([4.0, 5.0, 6.0])
+    anchored = mapper.update(hand(regrip_position, orientation=orientation), current_tcp)
     assert anchored.just_anchored
     assert np.allclose(anchored.pose, current_tcp)
+    assert np.allclose(mapper.update(hand(regrip_position, orientation=orientation), current_tcp).pose, current_tcp)
+    moved = mapper.update(hand(regrip_position + hand_rotation @ [0.1, 0, 0], orientation=orientation), current_tcp)
+    expected = current_tcp[:3, 3] + current_tcp[:3, :3] @ GRIP_TO_TOOL_AXES @ [0.1, 0, 0]
+    assert np.allclose(moved.pose[:3, 3], expected)
 
 
 def test_translation_uses_controller_offset_not_absolute_position():

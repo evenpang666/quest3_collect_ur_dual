@@ -3,6 +3,12 @@
 本项目使用 Quest Browser 的 WebXR 获取左右手柄位姿，通过 USB `adb reverse` 连接主机；头显通过 WebXR `immersive-ar` 显示现实透视，仅叠加录制文字提示，暂不显示三路相机画面；RealSense 图像仍正常采集和保存。左手柄固定控制左 UR7e，右手柄固定控制右 UR7e。每次按下侧握把时，记录手柄 `gripSpace` 与该臂当前 Tool/TCP 的位姿；后续手柄相对位姿偏移按 X 同向、Y/Z 反向映射到 TCP，头显朝向和 front 相机朝向均不参与运动方向换算。笛卡尔目标通过 RTDE `servoL` 发送，由每台 UR 控制器内部完成 IK。
 
 默认配置支持双臂；`hardware_single.yaml + single_arm.yaml` 支持只启动左臂。
+与独立运行的 `../safety` 检测服务共用相机时，可运行
+[`start_dual_vr_teleop_no_cameras.sh`](real_scripts/start_dual_vr_teleop_no_cameras.sh)：
+它不启动相机或录制器，右手柄 A 键可开启 QP-CBF 避障。避障模式先检查下一条
+RTDE 单步指令的固定点与扫掠路径；安全时直接使用 `servoJ` 发送，只有碰撞风险时
+才对本步指令做 QP-CBF 优化，并只处理最新手柄目标；普通启动脚本
+仍使用上面的 `servoL` 路径，不启用 A 键避障。
 
 现场部署时可直接使用 [快速启动命令快查](QUICKSTART_COMMANDS.md)，其中集中列出了安装、标定、预检、单/双臂启动、录制和诊断命令。
 
