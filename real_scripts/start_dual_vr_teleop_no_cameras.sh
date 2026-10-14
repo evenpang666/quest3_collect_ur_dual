@@ -36,8 +36,7 @@ if ! flock -n "$TELEOP_LOCK_FD"; then
   exit 2
 fi
 
-source /opt/ros/humble/setup.bash
-source "$HOME/ros2_ws/install/setup.bash"
+source "$PROJECT_DIR/real_scripts/ros_environment.sh"
 set -u
 # The installed ROS package may predate this script. Use the checked-out
 # Python modules and launch file so its no-camera flags work without a rebuild.

@@ -8,7 +8,7 @@ if [[ -n "${CONDA_PREFIX:-}" ]]; then
   exit 2
 fi
 
-source /opt/ros/humble/setup.bash
-source "$HOME/ros2_ws/install/setup.bash"
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$PROJECT_DIR/real_scripts/ros_environment.sh"
 
 exec ros2 run quest3_robot_data view_realsense_cameras "$@"

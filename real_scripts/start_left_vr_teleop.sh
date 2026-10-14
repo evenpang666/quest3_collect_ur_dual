@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Start the calibrated, slow, position-only left-arm Quest 3 teleoperation.
-# Some ROS Humble setup scripts reference optional environment variables before
+# Some ROS setup scripts reference optional environment variables before
 # defining them, so enable nounset only after sourcing ROS below.
 set -Eeo pipefail
 
@@ -30,8 +30,7 @@ if [[ -n "${CONDA_PREFIX:-}" ]]; then
   exit 2
 fi
 
-source /opt/ros/humble/setup.bash
-source "$HOME/ros2_ws/install/setup.bash"
+source "$PROJECT_DIR/real_scripts/ros_environment.sh"
 set -u
 
 mkdir -p "$OUTPUT_DIR"
@@ -55,7 +54,7 @@ ros2 launch quest3_robot_data realsense_four.launch.py \
 CAMERA_PID=$!
 
 echo "Waiting 4 seconds for RealSense initialization..."
-# Do not use `ros2 topic echo --once` as a launch gate here.  On this Humble
+# Do not use `ros2 topic echo --once` as a launch gate here.  On a previous
 # installation it can wait indefinitely despite the D455 already publishing
 # best-effort images, leaving the WebXR server unable to start.  The bridge
 # itself subscribes with sensor-data QoS and continually retries `/front.jpg`.

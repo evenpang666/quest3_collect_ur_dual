@@ -1,6 +1,6 @@
 # Quest 3 + 双 UR7e 命令快查（当前现场）
 
-本文档记录当前现场配置与操作流程；双臂启动前须完成四份相机外参标定。详细实现和历史只读调试见 [`real_scripts/README.md`](real_scripts/README.md)。
+以下命令默认在仓库根目录执行。本文档记录当前现场配置与操作流程；双臂启动前须完成四份相机外参标定。详细实现和历史只读调试见 [左臂只读调试归档](LEFT_ARM_DEBUG_HISTORY.md)。
 
 | 设备 | 标识 |
 |---|---|
@@ -19,16 +19,16 @@
 
 ```bash
 conda deactivate 2>/dev/null || true
-source /opt/ros/humble/setup.bash
-source ~/ros2_ws/install/setup.bash
+source /home/mypc/Documents/pyw/projects/quest3_collect/real_scripts/ros_environment.sh
 ```
 
 代码修改后重建：
 
 ```bash
 cd ~/ros2_ws
-colcon build --symlink-install --packages-select quest3_robot_data
-source install/setup.bash
+colcon --log-base log_jazzy build --symlink-install --packages-select quest3_robot_data \
+  --build-base build_jazzy --install-base install_jazzy
+source install_jazzy/local_setup.bash
 ```
 
 ## 2. 连接检查
@@ -197,7 +197,7 @@ QP-CBF 计算进程；预检不会查询 RealSense，也不会启动任何相机
 避障默认每 `50 ms` 计划一条动作；手柄目标的平移/旋转限幅按这个周期换算，
 不再把 `125 Hz` 的单次 `servoL` 限幅直接用于整条避障动作。最终关节步长仍受
 `safety` 的关节速度限制，并逐步执行固定点与扫掠路径检查。
-更新脚本后请退出旧 WebXR 会话并刷新 Quest Browser 页面，确认显示 `passthrough-v5`。
+更新脚本后请退出旧 WebXR 会话并刷新 Quest Browser 页面，确认显示 `passthrough-v6`。
 专用遥操设置了 `obstacle_avoidance.ignore_snapshot_age: true`：超过 `2.0 s` 的快照
 仍会用于 OBB 检查和优化，**不会仅因采集时间过期而停住动作**。如果检测服务持续
 发布旧场景，机械臂也会依据旧障碍物位置运动；其他 safety 程序仍保留 `2.0 s`
@@ -344,7 +344,7 @@ ros2 topic hz /right_arm/joint_states
 ros2 topic echo /right_arm/gripper_command
 ```
 
-若 Quest 现实透视未显示：退出沉浸式会话、刷新头显页面，确认页面版本为 `passthrough-v2`，在 Quest Browser 中重新点击“连接”→“进入现实透视”并允许进入会话；检查页面错误提示和 Quest Browser / 系统版本。现实背景由 Quest 自身透视提供，不依赖 RealSense 预览。
+若 Quest 现实透视未显示：退出沉浸式会话、刷新头显页面，确认页面版本为 `passthrough-v6`，在 Quest Browser 中重新点击“连接”→“进入现实透视”并允许进入会话；检查页面错误提示和 Quest Browser / 系统版本。现实背景由 Quest 自身透视提供，不依赖 RealSense 预览。
 
 若预检提示 `cannot check Quest ADB ... timed out`：这通常是首次启动 ADB daemon 超过旧的 3 秒窗口。当前版本已改为先启动 daemon 并等待最多 12 秒。仍失败时，退出所有头显上的 USB 调试授权提示后，在主机执行：
 

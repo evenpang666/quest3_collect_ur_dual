@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Start real, 6-DoF Quest teleoperation for both calibrated UR7e arms.
-# ROS setup runs before nounset because Humble setup scripts use optional vars.
+# ROS setup runs before nounset because setup scripts use optional vars.
 set -Eeo pipefail
 
 PROJECT_DIR="/home/mypc/Documents/pyw/projects/quest3_collect"
@@ -42,8 +42,7 @@ fi
 export QUEST3_ENABLE_AVOIDANCE=0
 unset QUEST3_AVOIDANCE_RUNTIME_URL QUEST3_AVOIDANCE_PARENT_PID
 
-source /opt/ros/humble/setup.bash
-source "$HOME/ros2_ws/install/setup.bash"
+source "$PROJECT_DIR/real_scripts/ros_environment.sh"
 set -u
 
 mkdir -p "$OUTPUT_DIR"
