@@ -75,6 +75,22 @@ real_scripts/start_left_vr_teleop.sh --confirm MOVE_LEFT_ARM \
 
 在 Quest Browser 打开 `http://localhost:8765`，点击“连接”→“进入现实透视”。按住侧握把移动对应机械臂；左手 **Y** 或右手 **B** 切换录制。按 `Ctrl-C` 结束。episode 保存路径、视频导出和手柄操作细节见[命令快查](docs/QUICKSTART_COMMANDS.md#6-双臂-vr-遥操与录制)。
 
+### 录制数据转视频
+
+录制结束后，在仓库根目录执行以下命令。`--task "pick place"` 的数据位于 `data/dual_vr_episodes/pick_place/`。
+
+```bash
+# 转换单个 HDF5 episode
+ros2 run quest3_robot_data export_episode_videos \
+  data/dual_vr_episodes/pick_place/episode_00000.hdf5
+
+# 转换该任务目录下的全部 HDF5 episode
+ros2 run quest3_robot_data export_task_episode_videos \
+  data/dual_vr_episodes/pick_place
+```
+
+每个 episode 的视频保存在同目录的 `episode_00000_videos/`，包含 front、side、左腕和右腕四路 MP4。默认帧率为 30 FPS；需要覆盖已有视频时，在命令末尾加 `--overwrite`。其他任务请将 `pick_place` 换成对应任务目录名。
+
 若与独立的 `../safety` 检测服务共用相机，可使用[无相机双臂遥操作流程](docs/QUICKSTART_COMMANDS.md#与-safety-同时运行无相机双臂遥操)；该模式不启动相机或录制器。
 
 ## 常见问题
@@ -82,7 +98,8 @@ real_scripts/start_left_vr_teleop.sh --confirm MOVE_LEFT_ARM \
 | 现象 | 先检查 |
 | --- | --- |
 | `rclpy` / `rtde_control` / `pyrealsense2` 导入失败 | 在新终端重新加载 `real_scripts/ros_environment.sh`；确认使用 Jazzy 系统 Python 与独立 `pydeps_jazzy`。见[安装说明](docs/INSTALLATION.md)。 |
-| Quest ADB 显示 `unauthorized` 或连接超时 | 在头显中接受 USB 调试授权，运行 `adb kill-server && adb start-server && adb devices -l`；设备状态应为 `device`。 |
+| Quest 未被 ADB 检测到 | 确认头显已开机并解锁、USB 数据线已接到当前主机；运行 `lsusb` 和 `adb devices -l`。若两处均无 Quest，检查线缆、接口和头显连接。 |
+| Quest ADB 显示 `unauthorized`、`offline` 或连接超时 | 在头显中接受 USB 调试授权，必要时重新插拔线缆，运行 `adb kill-server && adb start-server && adb devices -l`；设备状态应为 `device`。 |
 | Quest 页面无法进入现实透视 | 确认 `adb reverse --list` 含 `tcp:8765`，退出旧沉浸式会话并刷新 Quest Browser 页面。 |
 | 相机打不开或预检缺少序列号 | 停止其他占用 RealSense 的程序，执行 `real_scripts/view_front_cam.sh` 检查已连接相机。预览结束后按 `q` 退出，再启动遥操作。 |
 | 预检拒绝双臂启动 | 检查四份外参及双臂换算汇总均为 `calibrated: true`，并确认相机、底座与 TCP 未在标定后移动。见[标定命令](docs/QUICKSTART_COMMANDS.md#4-双臂双相机-charuco-外参标定先左臂再右臂)。 |

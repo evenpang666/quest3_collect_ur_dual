@@ -165,3 +165,18 @@ def test_usb2_observation_and_final_check_use_actual_intrinsics(tmp_path, monkey
     motion = charuco.verify_board(args, board, dictionary, np.asarray(observation["camera_to_board"]))
     assert np.allclose(motion, [0, 0])
     assert attempts == stopped == [(1280, 720, 15), (1280, 720, 15)]
+
+
+def test_inconsistent_printed_board_markers_are_filtered():
+    dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_5X5_100)
+    board = cv2.aruco.CharucoBoard_create(11, 8, .07, .052, dictionary)
+    ids = np.asarray(board.ids[:30], dtype=np.int32).reshape(-1, 1)
+    corners = []
+    for marker_id, points in zip(ids.reshape(-1), board.objPoints[:30]):
+        pixels = np.asarray(points, dtype=np.float32)[:, :2] * [400, 300] + [250, 100]
+        if marker_id in (5, 16, 27):
+            pixels += [200, 0]
+        corners.append(pixels.astype(np.float32).reshape(1, 4, 2))
+    filtered_corners, filtered_ids = charuco.filter_inconsistent_markers(corners, ids, board)
+    assert len(filtered_corners) == 27
+    assert set(ids.reshape(-1)) - set(filtered_ids.reshape(-1)) == {5, 16, 27}

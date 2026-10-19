@@ -354,7 +354,7 @@ adb start-server
 adb devices -l
 ```
 
-输出中 Quest 3 对应行必须是 `device`（不是 `unauthorized` 或 `no permissions`）；若是 `unauthorized`，戴上头显并在 USB 调试提示中选择允许。
+输出中 Quest 3 对应行必须是 `device`（不是 `unauthorized` 或 `no permissions`）；若是 `unauthorized`，戴上头显并在 USB 调试提示中选择允许。若 `adb devices -l` 只有表头、没有设备行，先确认头显开机解锁，再用 `lsusb` 检查主机是否看到 Quest；两处均无 Quest 时检查 USB 数据线和接口。若显示 `no permissions`，检查 Linux udev 规则和当前用户对 USB 设备的访问权限。
 
 当前遥操配置不设置软件 Cartesian 工作空间；实际运动边界由 UR 控制柜中的安全平面、关节限制、速度限制及急停负责。若任一臂不动，先查看系统状态和示教器的安全/保护停机提示。
 

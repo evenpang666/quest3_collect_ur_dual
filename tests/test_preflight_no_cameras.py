@@ -4,9 +4,25 @@ from contextlib import nullcontext
 from types import SimpleNamespace
 import sys
 
+import pytest
 import yaml
 
 from quest3_robot_data import preflight
+
+
+@pytest.mark.parametrize(("adb_output", "expected"), [
+    ("List of devices attached\n\n", "not detected by ADB"),
+    ("List of devices attached\nquest\tunauthorized\n", "USB debugging is unauthorized"),
+    ("List of devices attached\nquest\toffline\n", "offline in ADB"),
+    ("List of devices attached\nquest\tno permissions (udev rules)\n", "USB access is denied"),
+    ("List of devices attached\nquest\tdevice usb:1-1\n", None),
+])
+def test_quest_adb_failure_reports_device_state(adb_output, expected):
+    failure = preflight.quest_adb_failure(adb_output)
+    if expected is None:
+        assert failure is None
+    else:
+        assert expected in failure
 
 
 def test_preflight_skips_camera_query_but_checks_robot_and_quest(tmp_path, monkeypatch, capsys):

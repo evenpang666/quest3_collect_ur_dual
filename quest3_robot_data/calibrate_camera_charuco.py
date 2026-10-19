@@ -49,6 +49,34 @@ def _board_corners(board: object) -> np.ndarray:
     return np.asarray(values, dtype=float).reshape(-1, 3)
 
 
+def filter_inconsistent_markers(marker_corners, marker_ids, board):
+    """Discard marker IDs whose physical positions disagree with this board.
+
+    Some printed ChArUco boards use the opposite alternating marker layout
+    from the installed OpenCV version. Those markers can be decoded correctly
+    while having the wrong board coordinates, corrupting corner interpolation.
+    """
+    if marker_ids is None or len(marker_ids) < 6 or len(marker_corners) != len(marker_ids):
+        return marker_corners, marker_ids
+    board_centers = {
+        int(marker_id): np.asarray(points, dtype=np.float32).reshape(4, 3)[:, :2].mean(axis=0)
+        for marker_id, points in zip(np.asarray(board.ids).reshape(-1), board.objPoints)
+    }
+    indices = [index for index, marker_id in enumerate(marker_ids.reshape(-1))
+               if int(marker_id) in board_centers]
+    if len(indices) < 6:
+        raise SystemExit("fewer than six known ChArUco markers; check board parameters and visibility")
+    expected = np.asarray([board_centers[int(marker_ids[index, 0])] for index in indices], dtype=np.float32)
+    observed = np.asarray([np.asarray(marker_corners[index]).reshape(4, 2).mean(axis=0)
+                           for index in indices], dtype=np.float32)
+    _, inliers = cv2.findHomography(expected, observed, cv2.RANSAC, 8.0)
+    if inliers is None or int(inliers.sum()) < max(6, int(np.ceil(0.6 * len(indices)))):
+        raise SystemExit("ChArUco marker geometry does not match the configured board")
+    keep = np.zeros(len(marker_ids), dtype=bool)
+    keep[np.asarray(indices)[inliers.reshape(-1).astype(bool)]] = True
+    return [corners for corners, selected in zip(marker_corners, keep) if selected], marker_ids[keep]
+
+
 def select_spread_corners(detected_ids: list[int], board_points: np.ndarray) -> list[int]:
     """Select four detected corners with the largest mutual separation."""
     ids = sorted(set(int(value) for value in detected_ids))
@@ -212,6 +240,7 @@ def observe_camera(args, board, board_points, dictionary, signature, *, defer_to
                     continue
                 image = np.asanyarray(frame.get_data())
                 marker_corners, marker_ids, _ = cv2.aruco.detectMarkers(image, dictionary, parameters=parameters)
+                marker_corners, marker_ids = filter_inconsistent_markers(marker_corners, marker_ids, board)
                 charuco_count, pose = 0, None
                 if marker_ids is not None:
                     count, charuco_corners, charuco_ids = cv2.aruco.interpolateCornersCharuco(
@@ -428,6 +457,7 @@ def verify_board(args, board, dictionary, camera_to_board):
                 continue
             image = np.asanyarray(frame.get_data())
             marker_corners, marker_ids, _ = cv2.aruco.detectMarkers(image, dictionary, parameters=parameters)
+            marker_corners, marker_ids = filter_inconsistent_markers(marker_corners, marker_ids, board)
             if marker_ids is None:
                 continue
             count, charuco_corners, charuco_ids = cv2.aruco.interpolateCornersCharuco(

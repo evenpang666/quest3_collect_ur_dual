@@ -34,6 +34,25 @@ def resolve(config_path: Path, value: str) -> Path:
     return path if path.is_absolute() else (config_path.parent / path).resolve()
 
 
+def quest_adb_failure(output: str) -> str | None:
+    """Explain the actual ADB device state instead of treating every failure as authorization."""
+    states = [line.split(maxsplit=1)[1] for line in output.splitlines()
+              if line.strip() and not line.startswith("List of devices attached")
+              and len(line.split(maxsplit=1)) == 2]
+    if any(state.split()[0] == "device" for state in states):
+        return None
+    if any(state.startswith("unauthorized") for state in states):
+        return "Quest USB debugging is unauthorized; accept the prompt inside the headset, then run `adb devices -l`"
+    if any(state.startswith("no permissions") for state in states):
+        return "Quest USB access is denied; check Linux udev permissions, then run `adb devices -l`"
+    if any(state.startswith("offline") for state in states):
+        return "Quest is offline in ADB; reconnect USB and run `adb devices -l`"
+    if states:
+        return f"Quest is not ready in ADB ({', '.join(states)}); run `adb devices -l`"
+    return ("Quest is not detected by ADB; connect and unlock it with a USB data cable, "
+            "then run `adb devices -l`")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True, type=Path)
@@ -152,8 +171,9 @@ def main() -> None:
             adb = subprocess.run(
                 ["adb", "devices"], check=True, text=True, capture_output=True, timeout=8
             ).stdout
-            if "\tdevice" not in adb:
-                failures.append("Quest is not authorized in `adb devices`")
+            adb_failure = quest_adb_failure(adb)
+            if adb_failure:
+                failures.append(adb_failure)
         except Exception as exc:
             failures.append(f"cannot check Quest ADB: {exc}")
 
