@@ -9,12 +9,12 @@ import cv2
 import h5py
 
 if __package__:
-    from scripts.export_episode_videos import CAMERAS, episode_frame_count, export
+    from scripts.export_episode_videos import CAMERAS, DEFAULT_CODEC, episode_frame_count, export
 else:
-    from export_episode_videos import CAMERAS, episode_frame_count, export
+    from export_episode_videos import CAMERAS, DEFAULT_CODEC, episode_frame_count, export
 
 
-def videos_complete(episode: Path, paths: list[Path]) -> bool:
+def videos_complete(episode: Path, paths: list[Path], codec: str = DEFAULT_CODEC) -> bool:
     if not all(path.is_file() and path.stat().st_size > 0 for path in paths):
         return False
     with h5py.File(episode, "r") as file:
@@ -26,12 +26,20 @@ def videos_complete(episode: Path, paths: list[Path]) -> bool:
         try:
             if not capture.isOpened() or int(capture.get(cv2.CAP_PROP_FRAME_COUNT)) != expected_frames:
                 return False
+            fourcc = int(capture.get(cv2.CAP_PROP_FOURCC))
+            actual_codec = "".join(chr((fourcc >> (8 * index)) & 255) for index in range(4)).lower()
+            h264_tags = {"avc1", "h264", "x264"}
+            if codec.lower() in h264_tags:
+                if actual_codec not in h264_tags:
+                    return False
+            elif actual_codec != codec.lower():
+                return False
         finally:
             capture.release()
     return True
 
 
-def export_task(task_dir: Path, fps: float | None = None, codec: str = "mp4v", overwrite: bool = False) -> tuple[int, int, int]:
+def export_task(task_dir: Path, fps: float | None = None, codec: str = DEFAULT_CODEC, overwrite: bool = False) -> tuple[int, int, int]:
     task_dir = task_dir.expanduser().resolve()
     if not task_dir.is_dir():
         raise NotADirectoryError(f"task directory does not exist: {task_dir}")
@@ -50,8 +58,8 @@ def export_task(task_dir: Path, fps: float | None = None, codec: str = "mp4v", o
         output_dir = episode.with_name(f"{episode.stem}_videos")
         expected = [output_dir / filename for _, filename in CAMERAS]
         try:
-            if not overwrite and videos_complete(episode, expected):
-                print(f"[skip] {episode.name}: all four videos have the expected frame count", flush=True)
+            if not overwrite and videos_complete(episode, expected, codec):
+                print(f"[skip] {episode.name}: all four videos have the expected codec and frame count", flush=True)
                 skipped += 1
                 continue
             print(f"[export] {episode.name}", flush=True)
@@ -71,7 +79,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("task_dir", type=Path, help="directory containing this task's .hdf5 episodes")
     parser.add_argument("--fps", type=float, help="video FPS; default: 30")
-    parser.add_argument("--codec", default="mp4v", help="fourcc codec; default: mp4v")
+    parser.add_argument("--codec", default=DEFAULT_CODEC, help="fourcc codec; default: avc1 (H.264, VS Code compatible)")
     parser.add_argument("--overwrite", action="store_true", help="replace existing videos")
     args = parser.parse_args()
     try:

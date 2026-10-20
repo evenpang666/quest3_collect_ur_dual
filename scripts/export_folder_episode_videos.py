@@ -11,6 +11,12 @@ import cv2
 import numpy as np
 
 
+if __package__:
+    from scripts.export_episode_videos import DEFAULT_CODEC
+else:
+    from export_episode_videos import DEFAULT_CODEC
+
+
 RGB_CAMERAS = (
     ("rgb_front_cam", "front_cam.mp4"),
     ("rgb_side_cam", "side_cam.mp4"),
@@ -141,7 +147,10 @@ def export(
     if not all(writer.isOpened() for writer in writers):
         for writer in writers:
             writer.release()
-        raise RuntimeError(f"cannot open MP4 writer using {codec}")
+        raise RuntimeError(
+            f"cannot open MP4 writer using {codec}; H.264 export requires an encoder-enabled "
+            "OpenCV build (on Ubuntu use /usr/bin/python3 with python3-opencv)"
+        )
     try:
         for index in range(frames):
             for spec, writer in zip(specs, writers):
@@ -171,7 +180,7 @@ def main() -> None:
     parser.add_argument("episode", type=Path, help="folder episode_00001")
     parser.add_argument("--output-dir", type=Path, help="default: <episode>_videos beside it")
     parser.add_argument("--fps", type=float, default=30.0)
-    parser.add_argument("--codec", default="mp4v")
+    parser.add_argument("--codec", default=DEFAULT_CODEC, help="fourcc codec; default: avc1 (H.264, VS Code compatible)")
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--depth-min-mm", type=int, default=200, help="depth visualization lower limit (default: 200)")
     parser.add_argument("--depth-max-mm", type=int, default=2000, help="depth visualization upper limit (default: 2000)")

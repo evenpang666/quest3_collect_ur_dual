@@ -1,7 +1,8 @@
 import numpy as np
+import pytest
 
 from quest3_robot_data.teleop_core import AnchoredPoseMapper, ControllerState, GRIP_TO_TOOL_AXES
-from quest3_robot_data.transforms import matrix_to_quaternion, rotvec_to_matrix
+from quest3_robot_data.transforms import matrix_to_quaternion, matrix_to_rotvec, rotvec_to_matrix
 
 
 def hand(position, *, squeeze=1.0, trigger=0.0, orientation=(0, 0, 0, 1)):
@@ -137,3 +138,30 @@ def test_translation_uses_controller_offset_not_absolute_position():
     first_target = first.update(hand([0.10, -0.20, 0.30]), tcp).pose
     second_target = second.update(hand([1.10, -2.20, 3.30]), tcp).pose
     assert np.allclose(first_target, second_target)
+
+
+@pytest.mark.parametrize("hand_speed", [0.1, 0.6, 1.2, 2.0])
+def test_target_velocity_matches_hand_without_dropping_motion_when_tcp_lags(hand_speed):
+    mapper = AnchoredPoseMapper(np.eye(4))
+    tcp = np.eye(4)
+    tcp[:3, :3] = rotvec_to_matrix([0, 0, np.pi / 2])
+    hand_rotation = rotvec_to_matrix([0.3, 0.2, 0.1])
+    previous = mapper.update(hand([0, 0, 0], orientation=matrix_to_quaternion(hand_rotation)), tcp).pose
+    previous_time = 0.0
+    angular_speed = 4.0
+    # Keep measured TCP fixed to model delayed feedback. Even hand motion
+    # faster than the old ceilings must retain its full target trajectory.
+    for timestamp in (0.017, 0.038, 0.061, 0.1):
+        state = hand(
+            hand_rotation @ [hand_speed * timestamp, 0, 0],
+            orientation=matrix_to_quaternion(
+                hand_rotation @ rotvec_to_matrix([0, 0, angular_speed * timestamp])),
+        )
+        target = mapper.update(state, tcp).pose
+        dt = timestamp - previous_time
+        assert np.isclose(np.linalg.norm(target[:3, 3] - previous[:3, 3]) / dt, hand_speed)
+        rotation_delta = target[:3, :3] @ previous[:3, :3].T
+        assert np.isclose(np.linalg.norm(matrix_to_rotvec(rotation_delta)) / dt, angular_speed)
+        previous, previous_time = target, timestamp
+
+    assert np.allclose(mapper.update(state, tcp).pose, previous)

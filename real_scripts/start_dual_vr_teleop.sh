@@ -9,8 +9,9 @@ RECORDER_CONFIG="$PROJECT_DIR/config/dual_arm.yaml"
 OUTPUT_DIR="$PROJECT_DIR/data/dual_vr_episodes"
 CONFIRMATION="MOVE_BOTH_ARMS"
 TASK_DESCRIPTION=""
+RECORD_DEPTH=false
 
-if [[ "${1:-}" != "--confirm" || "${2:-}" != "$CONFIRMATION" || "${3:-}" != "--task" || -z "${4:-}" || $# -ne 4 ]]; then
+if [[ "${1:-}" != "--confirm" || "${2:-}" != "$CONFIRMATION" || "${3:-}" != "--task" || -z "${4:-}" || $# -lt 4 || $# -gt 5 || ( $# -eq 5 && "${5:-}" != "--record-depth" ) ]]; then
   cat <<EOF
 This starts REAL motion for BOTH UR7e arms.
 Before continuing: clear both workspaces, make E-stops reachable, set both URs
@@ -18,11 +19,16 @@ to Remote Control / running, and verify each pendant's active TCP is its own
 calibrated closed Robotiq fingertip TCP.
 
 Run exactly:
-  $0 --confirm $CONFIRMATION --task "Describe the task in natural language"
+  $0 --confirm $CONFIRMATION --task "Describe the task in natural language" [--record-depth]
+
+Default: RGB and robot data only. Add --record-depth to include front/side depth.
 EOF
   exit 2
 fi
 TASK_DESCRIPTION="$4"
+if [[ $# -eq 5 ]]; then
+  RECORD_DEPTH=true
+fi
 
 if [[ -n "${CONDA_PREFIX:-}" ]]; then
   echo "ERROR: leave Conda first (conda deactivate), then rerun this script." >&2
@@ -70,8 +76,10 @@ QUEST_KEEP_AWAKE=1
 echo "Quest proximity sensor overridden for this teleoperation session."
 
 echo "Starting both wrist cameras and front/side D455..."
+echo "Depth capture and recording: $RECORD_DEPTH"
 ros2 launch quest3_robot_data realsense_four.launch.py \
-  hardware_config:="$HARDWARE_CONFIG" &
+  hardware_config:="$HARDWARE_CONFIG" \
+  enable_depth:="$RECORD_DEPTH" &
 CAMERA_PID=$!
 echo "Waiting 4 seconds for RealSense initialization..."
 sleep 4
@@ -88,6 +96,7 @@ ros2 launch quest3_robot_data quest3_system.launch.py \
   recorder_config:="$RECORDER_CONFIG" \
   output_dir:="$OUTPUT_DIR" \
   task_description:="$TASK_DESCRIPTION" \
+  record_depth:="$RECORD_DEPTH" \
   front_topic:=/front_camera/camera/color/image_raw &
 SYSTEM_PID=$!
 wait "$SYSTEM_PID"

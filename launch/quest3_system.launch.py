@@ -12,6 +12,7 @@ def generate_launch_description():
     output = LaunchConfiguration("output_dir")
     task_description = LaunchConfiguration("task_description")
     start_recorder = LaunchConfiguration("start_recorder")
+    record_depth = LaunchConfiguration("record_depth")
     front_topic = LaunchConfiguration("front_topic")
     left_wrist_topic = LaunchConfiguration("left_wrist_topic")
     right_wrist_topic = LaunchConfiguration("right_wrist_topic")
@@ -24,6 +25,8 @@ def generate_launch_description():
         DeclareLaunchArgument("output_dir"),
         DeclareLaunchArgument("task_description"),
         DeclareLaunchArgument("start_recorder", default_value="true"),
+        DeclareLaunchArgument("record_depth", default_value="false", choices=["true", "false"],
+                             description="Include depth in recordings; match camera enable_depth"),
         DeclareLaunchArgument("front_topic", default_value="/front_camera/camera/color/image_raw"),
         DeclareLaunchArgument("left_wrist_topic", default_value="/left_wrist_camera/camera/color/image_raw"),
         DeclareLaunchArgument("right_wrist_topic", default_value="/right_wrist_camera/camera/color/image_raw"),
@@ -51,5 +54,6 @@ def generate_launch_description():
                  "--hardware-config", hardware,
                  "--output-dir", output,
                  "--task-description", task_description,
+                 "--record-depth", record_depth,
              ]),
     ])

@@ -5,9 +5,11 @@ max_skew_sec: 0.050
 max_joint_interp_gap_sec: 0.100
 source_buffer_size: 30
 writer_queue_size: 30
-rgb_storage: raw_lzf  # change to jpeg if lossless disk throughput is insufficient
+aggregate_batch_size: 4
+rgb_storage: raw  # lossless, uncompressed; raw_lzf or jpeg saves disk at CPU cost
 jpeg_quality: 90
 storage_backend: hdf5
+record_depth: false  # opt in with the startup script's --record-depth flag
 
 cameras:
   left_wrist:

@@ -43,17 +43,20 @@ def camera(name, serial, depth):
 def launch_cameras(context):
     path = Path(LaunchConfiguration("hardware_config").perform(context)).expanduser().resolve()
     config = yaml.safe_load(path.read_text(encoding="utf-8"))
+    enable_depth = LaunchConfiguration("enable_depth").perform(context).lower() == "true"
     nodes = []
     for name, values in config["cameras"].items():
         serial = str(values["serial"])
         if "CHANGE_ME" in serial:
             raise RuntimeError(f"configure the serial number for camera {name}")
-        nodes.append(camera(name, serial, name in {"front", "side"}))
+        nodes.append(camera(name, serial, enable_depth and name in {"front", "side"}))
     return nodes
 
 
 def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument("hardware_config"),
+        DeclareLaunchArgument("enable_depth", default_value="false", choices=["true", "false"],
+                             description="Enable front/side depth streams and alignment"),
         OpaqueFunction(function=launch_cameras),
     ])

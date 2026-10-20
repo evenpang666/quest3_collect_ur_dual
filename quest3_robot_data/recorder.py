@@ -1,19 +1,19 @@
 """Synchronized ROS 2 recorder for real UR robot observations.
 
-The writer deliberately runs outside ROS callbacks.  A callback only converts and
-copies a synchronized sample into a bounded queue; slow HDF5 I/O can therefore
-never stall the robot state subscriber.
+Callbacks match message references and robot state in timestamp order. Image
+conversion, resizing and disk I/O run in the bounded background writer.
 """
 from __future__ import annotations
 
 import argparse
-from collections import deque
+from collections import Counter, deque
 import json
 import os
 import queue
 import re
 import sys
 import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -27,7 +27,7 @@ import cv2
 import rclpy
 from cv_bridge import CvBridge
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import QoSProfile, ReliabilityPolicy
 from rclpy.utilities import remove_ros_args
 from sensor_msgs.msg import Image, JointState
 from std_msgs.msg import Bool, Float32, Float64MultiArray, String
@@ -37,12 +37,44 @@ from .teleop_core import ControllerGate, ControllerState
 
 
 @dataclass
+class BufferedImage:
+    """Retain the ROS image buffer until the writer is ready to convert it."""
+
+    message: Any
+    stream: str
+    record_size: tuple[int, int] | None = None
+
+
+def prepare_image(image: np.ndarray, stream: str, record_size: Any = None) -> np.ndarray:
+    """Center-crop to the configured aspect ratio, preserving depth values."""
+    if record_size is None:
+        return image
+    if image.ndim not in (2, 3):
+        raise ValueError(f"{stream} image must be HxW or HxWxC, got {image.shape}")
+    target_w, target_h = map(int, record_size)
+    source_h, source_w = image.shape[:2]
+    if (source_w, source_h) == (target_w, target_h):
+        return image
+    source_ratio, target_ratio = source_w / source_h, target_w / target_h
+    if source_ratio > target_ratio:
+        crop_w = round(source_h * target_ratio)
+        left = (source_w - crop_w) // 2
+        image = image[:, left:left + crop_w]
+    elif source_ratio < target_ratio:
+        crop_h = round(source_w / target_ratio)
+        top = (source_h - crop_h) // 2
+        image = image[top:top + crop_h, :]
+    interpolation = cv2.INTER_NEAREST if stream == "depth" else cv2.INTER_AREA
+    return cv2.resize(image, (target_w, target_h), interpolation=interpolation)
+
+
+@dataclass
 class Sample:
     """One front-camera-clocked robot observation."""
 
     timestamp_ns: int
     source_timestamps_ns: dict[str, int]
-    images: dict[str, dict[str, np.ndarray]]
+    images: dict[str, dict[str, np.ndarray | BufferedImage]]
     qpos: np.ndarray
     qvel: np.ndarray
     commanded_action: np.ndarray
@@ -62,9 +94,16 @@ class EpisodeWriter(threading.Thread):
     STOP = object()
     SHUTDOWN = object()
 
-    def __init__(self, max_queue_size: int, rgb_storage: str = "raw_lzf", jpeg_quality: int = 90):
+    def __init__(self, max_queue_size: int, rgb_storage: str = "raw", jpeg_quality: int = 90):
         super().__init__(name="hdf5-writer", daemon=True)
-        self.events: queue.Queue[StartEpisode | Sample | object] = queue.Queue(max_queue_size)
+        if max_queue_size <= 0:
+            raise ValueError("max_queue_size must be positive")
+        # Limit samples, while allowing STOP/SHUTDOWN to enter the same FIFO
+        # immediately even under disk backpressure. Episode order is preserved.
+        self.events: queue.Queue[StartEpisode | Sample | object] = queue.Queue()
+        self._sample_slots = threading.BoundedSemaphore(max_queue_size)
+        self._bridge = CvBridge()
+        self._datasets: dict[str, h5py.Dataset] = {}
         self.rgb_storage = rgb_storage
         self.jpeg_quality = int(jpeg_quality)
         self._error: Exception | None = None
@@ -76,20 +115,33 @@ class EpisodeWriter(threading.Thread):
 
     def put_control(self, item: StartEpisode | object) -> bool:
         """Control messages must not be dropped; they preserve episode boundaries."""
-        while self.is_alive():
-            try:
-                self.events.put(item, timeout=0.1)
-                return True
-            except queue.Full:
-                continue
-        return False
+        if not self.is_alive() or self.failed:
+            return False
+        self.events.put_nowait(item)
+        return True
 
     def put_sample(self, sample: Sample) -> bool:
-        try:
-            self.events.put_nowait(sample)
-            return True
-        except queue.Full:
+        if self.failed or not self.is_alive() or not self._sample_slots.acquire(blocking=False):
             return False
+        self.events.put_nowait(sample)
+        return True
+
+    def _next_event(self) -> StartEpisode | Sample | object:
+        event = self.events.get()
+        if isinstance(event, Sample):
+            self._sample_slots.release()
+        return event
+
+    def _prepare_sample(self, sample: Sample) -> None:
+        for streams in sample.images.values():
+            for stream, value in streams.items():
+                if isinstance(value, BufferedImage):
+                    image = self._bridge.imgmsg_to_cv2(
+                        value.message, desired_encoding="rgb8" if stream == "rgb" else "passthrough"
+                    )
+                    # NumPy keeps the backing buffer alive; ROS messages are
+                    # immutable after enqueue, so an extra full-frame copy is unnecessary.
+                    streams[stream] = np.ascontiguousarray(prepare_image(image, stream, value.record_size))
 
     def run(self) -> None:
         file: h5py.File | None = None
@@ -98,7 +150,7 @@ class EpisodeWriter(threading.Thread):
         count = 0
         try:
             while True:
-                event = self.events.get()
+                event = self._next_event()
                 if event is self.SHUTDOWN:
                     if file is not None:
                         self._close_episode(file, final_path, pending, count)
@@ -111,6 +163,7 @@ class EpisodeWriter(threading.Thread):
                     event.path.parent.mkdir(parents=True, exist_ok=True)
                     inprogress = event.path.with_suffix(".inprogress")
                     file = h5py.File(inprogress, "x")
+                    self._datasets = {}
                     for key, value in event.metadata.items():
                         file.attrs[key] = value
                     file.attrs["complete"] = False
@@ -135,6 +188,7 @@ class EpisodeWriter(threading.Thread):
                     continue
                 if file is None:
                     continue
+                self._prepare_sample(event)
                 if pending is None:
                     pending = event
                 else:
@@ -208,23 +262,29 @@ class EpisodeWriter(threading.Thread):
     ) -> None:
         if "timestamps_ns" not in file:
             self._create_layout(file, sample)
-        self._resize_write(file["timestamps_ns"], np.uint64(sample.timestamp_ns))
-        self._resize_write(file["observations/qpos"], sample.qpos.astype(np.float32, copy=False))
-        self._resize_write(file["observations/qvel"], sample.qvel.astype(np.float32, copy=False))
-        self._resize_write(file["observations/gripper_position"], sample.gripper_position.astype(np.float32, copy=False))
-        self._resize_write(file["action"], sample.commanded_action.astype(np.float32, copy=False))
-        self._resize_write(file["executed_action"], executed_action.astype(np.float32, copy=False))
-        self._resize_write(file["gripper_action"], sample.gripper_command.astype(np.float32, copy=False))
-        self._resize_write(file["action_valid"], np.bool_(action_valid))
-        self._resize_write(file["is_terminal"], np.bool_(terminal))
+            self._datasets = {}
+
+            def cache_dataset(name: str, value: Any) -> None:
+                if isinstance(value, h5py.Dataset):
+                    self._datasets[name] = value
+
+            file.visititems(cache_dataset)
+        datasets = self._datasets
+        self._resize_write(datasets["timestamps_ns"], np.uint64(sample.timestamp_ns))
+        self._resize_write(datasets["observations/qpos"], sample.qpos.astype(np.float32, copy=False))
+        self._resize_write(datasets["observations/qvel"], sample.qvel.astype(np.float32, copy=False))
+        self._resize_write(datasets["observations/gripper_position"], sample.gripper_position.astype(np.float32, copy=False))
+        self._resize_write(datasets["action"], sample.commanded_action.astype(np.float32, copy=False))
+        self._resize_write(datasets["executed_action"], executed_action.astype(np.float32, copy=False))
+        self._resize_write(datasets["gripper_action"], sample.gripper_command.astype(np.float32, copy=False))
+        self._resize_write(datasets["action_valid"], np.bool_(action_valid))
+        self._resize_write(datasets["is_terminal"], np.bool_(terminal))
         for source, timestamp in sample.source_timestamps_ns.items():
-            self._resize_write(file[f"source_timestamps_ns/{source}"], np.uint64(timestamp))
+            self._resize_write(datasets[f"source_timestamps_ns/{source}"], np.uint64(timestamp))
         for camera, streams in sample.images.items():
             for stream, image in streams.items():
-                dataset = file[f"observations/images/{camera}/{stream}"]
+                dataset = datasets[f"observations/images/{camera}/{stream}"]
                 if stream == "rgb" and dataset.attrs.get("storage") == "jpeg":
-                    import cv2
-
                     ok, encoded = cv2.imencode(
                         ".jpg", image[..., ::-1], [cv2.IMWRITE_JPEG_QUALITY, self.jpeg_quality]
                     )
@@ -240,14 +300,17 @@ class EpisodeWriter(threading.Thread):
                 self._resize_write(dataset, image)
 
     @staticmethod
-    def _create_dataset(file: h5py.File, name: str, shape: tuple[int, ...], dtype: Any) -> None:
+    def _create_dataset(
+        file: h5py.File, name: str, shape: tuple[int, ...], dtype: Any,
+        compression: str | None = "lzf",
+    ) -> None:
         file.create_dataset(
             name,
             shape=(0, *shape),
             maxshape=(None, *shape),
             dtype=dtype,
-            chunks=(1, *shape),
-            compression="lzf",
+            chunks=(1 if len(shape) >= 2 else 64, *shape),
+            compression=compression,
         )
 
     def _create_layout(self, file: h5py.File, sample: Sample) -> None:
@@ -274,25 +337,21 @@ class EpisodeWriter(threading.Thread):
                         chunks=(1,),
                     )
                 else:
-                    self._create_dataset(file, name, image.shape, image.dtype)
+                    compression = None if stream == "rgb" and self.rgb_storage == "raw" else "lzf"
+                    self._create_dataset(file, name, image.shape, image.dtype, compression)
                 dataset = file[f"observations/images/{camera}/{stream}"]
                 dataset.attrs["encoding"] = (
                     "jpeg bytes decoded as RGB8"
                     if stream == "rgb" and self.rgb_storage == "jpeg"
                     else "rgb8" if stream == "rgb" else "source passthrough"
                 )
-                dataset.attrs["storage"] = "jpeg" if stream == "rgb" and self.rgb_storage == "jpeg" else "raw_lzf"
+                dataset.attrs["storage"] = self.rgb_storage if stream == "rgb" else "raw_lzf"
                 dataset.attrs["original_shape"] = image.shape
                 dataset.attrs["unit"] = "" if stream == "rgb" else "driver-defined (usually mm for 16UC1)"
 
 
 class FolderEpisodeWriter(EpisodeWriter):
-    """Lossless, uncompressed episode writer for low-latency acquisition.
-
-    Each image is a standalone ``.npy`` file.  This avoids HDF5/LZF packing
-    in the active recording path; a later offline tool may package the folder
-    into HDF5 without affecting teleoperation.
-    """
+    """Legacy folder writer: RGB JPEG, lossless depth NPY and JSONL state."""
 
     @staticmethod
     def _image_directory(camera: str, stream: str) -> str:
@@ -399,7 +458,7 @@ class FolderEpisodeWriter(EpisodeWriter):
         image_dirs: set[str] = set()
         try:
             while True:
-                event = self.events.get()
+                event = self._next_event()
                 if event is self.SHUTDOWN:
                     if directory is not None and final_path is not None and state_file is not None:
                         if pending is not None:
@@ -431,6 +490,7 @@ class FolderEpisodeWriter(EpisodeWriter):
                     continue
                 if not isinstance(event, Sample) or directory is None or state_file is None:
                     continue
+                self._prepare_sample(event)
                 if pending is None:
                     pending = event
                 else:
@@ -471,6 +531,9 @@ class DatasetRecorder(Node):
         self.synced_frames = 0
         self.enqueued_frames = 0
         self.dropped_frames = 0
+        self.drop_reasons: Counter[str] = Counter()
+        self.last_sync_error: str | None = None
+        self._reference_wait_started: tuple[int, int] | None = None
         self._ui_commands: queue.SimpleQueue[str] = queue.SimpleQueue()
         self._episode_number = self._next_episode_number()
         self._last_reference_stamp = -1
@@ -479,6 +542,7 @@ class DatasetRecorder(Node):
             float(self.config.get("controller_timeout_sec", 0.25)),
         )
         buffer_size = int(self.config["source_buffer_size"])
+        sensor_qos = QoSProfile(depth=buffer_size, reliability=ReliabilityPolicy.BEST_EFFORT)
         self._buffers: dict[str, deque[tuple[int, Any]]] = {}
         self._subscriptions = []
 
@@ -505,14 +569,14 @@ class DatasetRecorder(Node):
             key = f"image:{name}:rgb"
             self._buffers[key] = deque(maxlen=buffer_size)
             self._subscriptions.append(self.create_subscription(
-                Image, camera["rgb_topic"], lambda m, k=key: self._buffer_header_message(k, m), qos_profile_sensor_data
+                Image, camera["rgb_topic"], lambda m, k=key: self._buffer_header_message(k, m), sensor_qos
             ))
             self._stream_keys.append((name, "rgb"))
-            if "depth_topic" in camera:
+            if self.config["record_depth"] and "depth_topic" in camera:
                 key = f"image:{name}:depth"
                 self._buffers[key] = deque(maxlen=buffer_size)
                 self._subscriptions.append(self.create_subscription(
-                    Image, camera["depth_topic"], lambda m, k=key: self._buffer_header_message(k, m), qos_profile_sensor_data
+                    Image, camera["depth_topic"], lambda m, k=key: self._buffer_header_message(k, m), sensor_qos
                 ))
                 self._stream_keys.append((name, "depth"))
         for name in self.arm_order:
@@ -523,13 +587,14 @@ class DatasetRecorder(Node):
             for key in (joint_key, action_key, grip_key, grip_command_key):
                 self._buffers[key] = deque(maxlen=buffer_size)
             self._subscriptions.extend([
-                self.create_subscription(JointState, arm["joint_topic"], lambda m, k=joint_key: self._buffer_header_message(k, m), qos_profile_sensor_data),
+                self.create_subscription(JointState, arm["joint_topic"], lambda m, k=joint_key: self._buffer_header_message(k, m), sensor_qos),
                 self.create_subscription(Float64MultiArray, arm["commanded_action_topic"], lambda m, k=action_key: self._buffer_arrival_message(k, m), 20),
                 self.create_subscription(Float32, arm["gripper_position_topic"], lambda m, k=grip_key: self._buffer_arrival_message(k, m), 10),
                 self.create_subscription(Float32, arm["gripper_command_topic"], lambda m, k=grip_command_key: self._buffer_arrival_message(k, m), 10),
             ])
         self.get_logger().info(
             f"READY mode={self.config['mode']}, reference=front/rgb, "
+            f"record_depth={self.config['record_depth']}, "
             f"record topic={self.config['record_topic']}. Send Bool true to start."
         )
 
@@ -545,17 +610,17 @@ class DatasetRecorder(Node):
         expected_arms = 1 if mode == "single" else 2
         if len(config["arms"]) != expected_arms:
             raise ValueError(f"mode={mode} requires exactly {expected_arms} arm configuration(s)")
-        # A complete dataset has front and side RGB-D.  During single-arm
-        # commissioning the side D455 is intentionally absent, so only front
-        # RGB-D is mandatory; any configured side camera must still be RGB-D.
-        # A side D455 is optional during staged hardware bring-up, including
-        # dual-arm teleoperation.  If it is configured it must be RGB-D; a
-        # complete production recording should include it.
-        for camera in ("front",):
-            if camera not in config["cameras"] or "depth_topic" not in config["cameras"][camera]:
-                raise ValueError(f"{camera} must specify rgb_topic and depth_topic")
-        if "side" in config["cameras"] and "depth_topic" not in config["cameras"]["side"]:
-            raise ValueError("side must specify rgb_topic and depth_topic")
+        config.setdefault("record_depth", False)
+        if not isinstance(config["record_depth"], bool):
+            raise ValueError("record_depth must be true or false")
+        if "front" not in config["cameras"]:
+            raise ValueError("front must specify rgb_topic")
+        # Topics remain in the YAML as opt-in sources, but RGB-only recording
+        # must neither subscribe to depth nor wait for it during aggregation.
+        if config["record_depth"]:
+            for camera in ("front", "side"):
+                if camera in config["cameras"] and not config["cameras"][camera].get("depth_topic"):
+                    raise ValueError(f"{camera} must specify depth_topic when record_depth=true")
         expected_wrist_cameras = 1 if mode == "single" else 2
         actual_wrist_cameras = [name for name in config["cameras"] if name.endswith("wrist")]
         if len(actual_wrist_cameras) != expected_wrist_cameras:
@@ -582,12 +647,19 @@ class DatasetRecorder(Node):
         config.setdefault("max_joint_interp_gap_sec", 0.1)
         config.setdefault("source_buffer_size", 30)
         config.setdefault("writer_queue_size", 30)
-        config.setdefault("rgb_storage", "raw_lzf")
+        config.setdefault("aggregate_batch_size", 4)
+        for field in ("source_buffer_size", "writer_queue_size", "aggregate_batch_size"):
+            if type(config[field]) is not int or config[field] <= 0:
+                raise ValueError(f"{field} must be a positive integer")
+        for field in ("max_skew_sec", "max_joint_interp_gap_sec"):
+            if not np.isfinite(float(config[field])) or float(config[field]) <= 0:
+                raise ValueError(f"{field} must be finite and positive")
+        config.setdefault("rgb_storage", "raw")
         config.setdefault("jpeg_quality", 90)
         config.setdefault("folder_rgb_jpeg_quality", config["jpeg_quality"])
         config.setdefault("storage_backend", "hdf5")
-        if config["rgb_storage"] not in {"raw_lzf", "jpeg"}:
-            raise ValueError("rgb_storage must be raw_lzf or jpeg")
+        if config["rgb_storage"] not in {"raw", "raw_lzf", "jpeg"}:
+            raise ValueError("rgb_storage must be raw, raw_lzf or jpeg")
         if not 1 <= int(config["jpeg_quality"]) <= 100:
             raise ValueError("jpeg_quality must be in [1,100]")
         if not 1 <= int(config["folder_rgb_jpeg_quality"]) <= 100:
@@ -628,33 +700,20 @@ class DatasetRecorder(Node):
     def _buffer_header_message(self, key: str, message: Any) -> None:
         stamp = self._stamp_ns(message)
         if stamp > 0:
-            self._buffers[key].append((stamp, message))
+            values = self._buffers[key]
+            if values and stamp <= values[-1][0]:
+                return  # Ignore duplicate/late packets; interpolation requires timestamp order.
+            if (key == "image:front:rgb" and self.recording and len(values) == values.maxlen
+                    and values[0][0] > self._last_reference_stamp):
+                self._drop_frame("reference_overflow")
+                self._last_reference_stamp = values[0][0]
+            values.append((stamp, message))
 
     def _buffer_arrival_message(self, key: str, message: Any) -> None:
         self._buffers[key].append((self.get_clock().now().nanoseconds, message))
 
     def _prepare_image_for_recording(self, camera: str, stream: str, image: np.ndarray) -> np.ndarray:
-        """Center-crop and resize only streams that declare an HDF5 record_size."""
-        record_size = self.config["cameras"][camera].get("record_size")
-        if record_size is None:
-            return image
-        if image.ndim not in (2, 3):
-            raise ValueError(f"{camera}/{stream} image must be HxW or HxWxC, got {image.shape}")
-        target_w, target_h = map(int, record_size)
-        source_h, source_w = image.shape[:2]
-        if (source_w, source_h) == (target_w, target_h):
-            return image
-        source_ratio, target_ratio = source_w / source_h, target_w / target_h
-        if source_ratio > target_ratio:
-            crop_w = round(source_h * target_ratio)
-            left = (source_w - crop_w) // 2
-            image = image[:, left:left + crop_w]
-        elif source_ratio < target_ratio:
-            crop_h = round(source_w / target_ratio)
-            top = (source_h - crop_h) // 2
-            image = image[top:top + crop_h, :]
-        interpolation = cv2.INTER_NEAREST if stream == "depth" else cv2.INTER_AREA
-        return cv2.resize(image, (target_w, target_h), interpolation=interpolation)
+        return prepare_image(image, stream, self.config["cameras"][camera].get("record_size"))
 
     def _nearest(self, key: str, target: int) -> tuple[int, Any]:
         values = self._buffers[key]
@@ -680,26 +739,36 @@ class DatasetRecorder(Node):
         stamp, message = self._nearest(f"joint:{arm}", target)
         return self._joint_positions(arm, message), self._joint_velocity(arm, message), stamp, stamp
 
-    def _aggregate_latest_reference(self) -> None:
+    def _drop_frame(self, reason: str) -> None:
+        self.dropped_frames += 1
+        self.drop_reasons[reason] += 1
+
+    def _aggregate_latest_reference(self, finalize: bool = False) -> None:
+        """Drain oldest references first, bounding callback work between subscriptions."""
         reference = self._buffers.get("image:front:rgb")
         if not reference:
             return
-        target = reference[-1][0]
-        if target == self._last_reference_stamp:
-            return
         if not self.recording or self.writer.failed:
-            self._last_reference_stamp = target
+            self._last_reference_stamp = reference[-1][0]
+            self._reference_wait_started = None
             return
+        pending = [(stamp, message) for stamp, message in reference if stamp > self._last_reference_stamp]
+        limit = len(pending) if finalize else self.config["aggregate_batch_size"]
+        for target, message in pending[:limit]:
+            if not self._aggregate_reference(target, message, finalize):
+                break
+
+    def _aggregate_reference(self, target: int, reference_message: Any, finalize: bool) -> bool:
         try:
-            images: dict[str, dict[str, np.ndarray]] = {}
+            images: dict[str, dict[str, np.ndarray | BufferedImage]] = {}
             source_stamps: dict[str, int] = {}
             for camera, stream in self._stream_keys:
-                stamp, message = self._nearest(f"image:{camera}:{stream}", target)
-                # Explicit rgb8 conversion guarantees the stored channel order is RGB.
-                encoding = "rgb8" if stream == "rgb" else "passthrough"
-                image = self.bridge.imgmsg_to_cv2(message, desired_encoding=encoding)
-                image = self._prepare_image_for_recording(camera, stream, image)
-                images.setdefault(camera, {})[stream] = np.ascontiguousarray(image).copy()
+                stamp, message = ((target, reference_message) if (camera, stream) == ("front", "rgb")
+                                  else self._nearest(f"image:{camera}:{stream}", target))
+                size = self.config["cameras"][camera].get("record_size")
+                images.setdefault(camera, {})[stream] = BufferedImage(
+                    message, stream, tuple(size) if size else None
+                )
                 source_stamps[f"{camera}_{stream}"] = stamp
             positions, velocities, actions, grippers, gripper_commands = [], [], [], [], []
             for arm in self.arm_order:
@@ -735,20 +804,25 @@ class DatasetRecorder(Node):
             if self.writer.put_sample(sample):
                 self.enqueued_frames += 1
             else:
-                self.dropped_frames += 1
+                self._drop_frame("writer_queue_full")
         except LookupError as exc:
-            # Other USB streams commonly arrive a few milliseconds after front.
-            # Retry this reference until the allowed skew window has elapsed.
-            age_ns = self.get_clock().now().nanoseconds - target
-            if age_ns <= int(float(self.config["max_skew_sec"]) * 1e9):
-                return
+            # Wait on the oldest frame even if newer front frames arrive. Use
+            # host monotonic time: camera stamps can have a different offset.
+            now = time.monotonic_ns()
+            if self._reference_wait_started is None or self._reference_wait_started[0] != target:
+                self._reference_wait_started = (target, now)
+            waited = now - self._reference_wait_started[1]
+            if not finalize and waited < int(float(self.config["max_skew_sec"]) * 1e9):
+                return False
             self._last_reference_stamp = target
-            self.dropped_frames += 1
-            self.get_logger().error(f"Dropped synchronized frame: {exc}")
+            self._drop_frame("sync_timeout")
+            self.last_sync_error = str(exc)
         except Exception as exc:
             self._last_reference_stamp = target
-            self.dropped_frames += 1
+            self._drop_frame("invalid_sample")
             self.get_logger().error(f"Dropped synchronized frame: {exc}")
+        self._reference_wait_started = None
+        return True
 
     def _record_command(self, message: Bool) -> None:
         self._set_recording(message.data, origin="ROS")
@@ -814,8 +888,15 @@ class DatasetRecorder(Node):
                 self.recording = False
             self.get_logger().error(f"Cannot record: writer failed: {self.writer.failed!r}")
             return
+        if not enabled:
+            self._aggregate_latest_reference(finalize=True)
         self.recording = enabled
         if enabled:
+            # Include the current front frame, excluding pre-recording history.
+            reference = self._buffers.get("image:front:rgb")
+            if reference:
+                self._last_reference_stamp = reference[-1][0] - 1
+            self._reference_wait_started = None
             self.recording_interrupted_reason = None
             self.recording_started_ns = self.get_clock().now().nanoseconds
             suffix = ".hdf5" if self.config["storage_backend"] == "hdf5" else ""
@@ -834,6 +915,7 @@ class DatasetRecorder(Node):
                 "task_description": self.config["task_description"],
                 "qpos_joint_names": json.dumps(joint_names),
                 "camera_names": json.dumps(self.camera_order),
+                "record_depth": self.config["record_depth"],
                 "action_joint_names": json.dumps(joint_names),
                 "config_yaml": yaml.safe_dump(self.config, sort_keys=True),
             }
@@ -863,7 +945,9 @@ class DatasetRecorder(Node):
             self.recording = False
         self.get_logger().info(
             f"recording={self.recording} synced={self.synced_frames} "
-            f"queued={self.enqueued_frames} dropped={self.dropped_frames}"
+            f"queued={self.enqueued_frames} dropped={self.dropped_frames} "
+            f"writer_queue={self.writer.events.qsize()} reasons={dict(self.drop_reasons)} "
+            f"last_sync_error={self.last_sync_error}"
         )
         self._publish_status()
 
@@ -878,6 +962,9 @@ class DatasetRecorder(Node):
             ),
             "synced_frames": self.synced_frames,
             "dropped_frames": self.dropped_frames,
+            "enqueued_frames": self.enqueued_frames,
+            "drop_reasons": dict(self.drop_reasons),
+            "last_sync_error": self.last_sync_error,
             "writer_queue": self.writer.events.qsize(),
             "writer_error": repr(self.writer.failed) if self.writer.failed else None,
             "recording_interrupted": self.recording_interrupted_reason,
@@ -936,13 +1023,17 @@ def _embed_hardware_metadata(config: dict[str, Any], hardware_path: Path) -> Non
 
 
 def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description="Record synchronized UR/Realsense demonstrations to HDF5.")
+    parser = argparse.ArgumentParser(description="Record synchronized UR/RealSense demonstrations.")
     parser.add_argument("--config", required=True, type=Path, help="YAML topic and joint-order configuration")
     parser.add_argument(
         "--output-dir", required=True, type=Path,
         help="base directory for episodes (dual mode adds a task-name subdirectory)",
     )
     parser.add_argument("--hardware-config", type=Path, help="embed robot/TCP/camera calibration metadata")
+    parser.add_argument(
+        "--record-depth", nargs="?", const="true", choices=("true", "false"),
+        help="include configured depth streams; default: record_depth in YAML, or false",
+    )
     parser.add_argument(
         "--task-description",
         required=True,
@@ -954,6 +1045,8 @@ def main(argv: list[str] | None = None) -> None:
         config = yaml.safe_load(config_file)
     if not isinstance(config, dict):
         raise ValueError("configuration root must be a YAML mapping")
+    if args.record_depth is not None:
+        config["record_depth"] = args.record_depth == "true"
     task_description = args.task_description.strip()
     if not task_description:
         raise ValueError("--task-description must not be empty")

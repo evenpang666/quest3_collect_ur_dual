@@ -10,8 +10,9 @@ RECORDER_CONFIG="$PROJECT_DIR/config/single_arm_debug.yaml"
 OUTPUT_DIR="$PROJECT_DIR/data/left_vr_episodes"
 CONFIRMATION="MOVE_LEFT_ARM"
 TASK_DESCRIPTION=""
+RECORD_DEPTH=false
 
-if [[ "${1:-}" != "--confirm" || "${2:-}" != "$CONFIRMATION" || "${3:-}" != "--task" || -z "${4:-}" || $# -ne 4 ]]; then
+if [[ "${1:-}" != "--confirm" || "${2:-}" != "$CONFIRMATION" || "${3:-}" != "--task" || -z "${4:-}" || $# -lt 4 || $# -gt 5 || ( $# -eq 5 && "${5:-}" != "--record-depth" ) ]]; then
   cat <<EOF
 This starts REAL left-UR motion via RTDE (slow, position-only commissioning mode).
 Before continuing: clear the workspace, keep the E-stop reachable, set the UR to
@@ -19,11 +20,16 @@ Remote Control / running, and verify the pendant's active TCP is the calibrated
 closed Robotiq fingertip TCP.
 
 Run exactly:
-  $0 --confirm $CONFIRMATION --task "Describe the task in natural language"
+  $0 --confirm $CONFIRMATION --task "Describe the task in natural language" [--record-depth]
+
+Default: RGB and robot data only. Add --record-depth to include front depth.
 EOF
   exit 2
 fi
 TASK_DESCRIPTION="$4"
+if [[ $# -eq 5 ]]; then
+  RECORD_DEPTH=true
+fi
 
 if [[ -n "${CONDA_PREFIX:-}" ]]; then
   echo "ERROR: leave Conda first (conda deactivate), then rerun this script." >&2
@@ -49,8 +55,10 @@ cleanup() {
 trap cleanup INT TERM EXIT
 
 echo "Starting left wrist and front RealSense cameras..."
+echo "Depth capture and recording: $RECORD_DEPTH"
 ros2 launch quest3_robot_data realsense_four.launch.py \
-  hardware_config:="$HARDWARE_CONFIG" &
+  hardware_config:="$HARDWARE_CONFIG" \
+  enable_depth:="$RECORD_DEPTH" &
 CAMERA_PID=$!
 
 echo "Waiting 4 seconds for RealSense initialization..."
@@ -71,6 +79,7 @@ ros2 launch quest3_robot_data quest3_system.launch.py \
   recorder_config:="$RECORDER_CONFIG" \
   output_dir:="$OUTPUT_DIR" \
   task_description:="$TASK_DESCRIPTION" \
+  record_depth:="$RECORD_DEPTH" \
   front_topic:=/front_camera/camera/color/image_raw &
 LAUNCH_PID=$!
 wait "$LAUNCH_PID"

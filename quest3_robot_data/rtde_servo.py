@@ -372,14 +372,15 @@ class ArmWorker(threading.Thread):
                             valid = False
                             self.status = "workspace stop"
                         elif target is not None:
-                            actual = np.asarray(receive.getActualTCPPose(), dtype=float)
-                            actual_matrix = ur_pose_to_matrix(actual)
-                            safe_target = limit_cartesian_target(
-                                actual_matrix, target,
-                                float(self.common["max_target_jump_m"]),
-                                float(self.common["max_target_jump_rad"]),
-                            )
-                            command = matrix_to_ur_pose(safe_target)
+                            command_target = target
+                            if self.common.get("limit_cartesian_targets", True):
+                                actual = np.asarray(receive.getActualTCPPose(), dtype=float)
+                                command_target = limit_cartesian_target(
+                                    ur_pose_to_matrix(actual), target,
+                                    float(self.common["max_target_jump_m"]),
+                                    float(self.common["max_target_jump_rad"]),
+                                )
+                            command = matrix_to_ur_pose(command_target)
                             # ur_rtde reports a robot-side URScript loss (for
                             # example after an E-stop/protective stop) by
                             # returning False.  It does not necessarily raise

@@ -54,17 +54,20 @@ arms:
     gripper_close_threshold: 0.15
     # No software Cartesian workspace limit; use UR controller safety limits.
 
-# Same responsive limits apply to both arms.
+# Stream the full 1:1 hand-mapped pose for both arms.
 rtde:
   enable_motion: true
-  # Cartesian servoL limits.  Pendant-configured UR safety limits remain
-  # authoritative for each arm.
-  speed: 0.45
-  acceleration: 1.20
+  # Disable host translation/rotation clipping for ordinary servoL teleop.
+  # UR controller safety settings govern the robot's actual motion.
+  limit_cartesian_targets: false
+  # Required API placeholders: ur_rtde 1.6.5 servoL/servoJ ignore these two.
+  speed: 0.0
+  acceleration: 0.0
   lookahead_time: 0.06
   gain: 600
-  # At 125 Hz: approximately 0.45 m/s translation and 3.0 rad/s rotation.
-  max_target_jump_m: 0.0036
+  # These bounds are used by the optional QP-CBF avoidance path only while
+  # limit_cartesian_targets=false; ordinary servoL sends the full target.
+  max_target_jump_m: 0.0048
   max_target_jump_rad: 0.024
   target_timeout_sec: 0.25
   # Retry RTDE after a robot-side control script loss (E-stop/protective stop).

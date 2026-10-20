@@ -1,11 +1,13 @@
-# Minimal recorder layout: left wrist RGB + front RGB-D + left-arm state/action.
+# Minimal recorder layout: wrist/front RGB + optional front depth + left-arm state/action.
 mode: single
+record_depth: false
 record_topic: /quest3/recording
 max_skew_sec: 0.050
 max_joint_interp_gap_sec: 0.100
 source_buffer_size: 30
 writer_queue_size: 30
-rgb_storage: raw_lzf
+aggregate_batch_size: 4
+rgb_storage: raw  # lossless, uncompressed; raw_lzf or jpeg saves disk at CPU cost
 jpeg_quality: 90
 # HDF5 appends samples to one sequential file; this is substantially faster
 # than creating several image files for every live sample.
@@ -17,7 +19,7 @@ cameras:
   front:
     rgb_topic: /front_camera/camera/color/image_raw
     depth_topic: /front_camera/camera/aligned_depth_to_color/image_raw
-    # D455 publishes 1280x720 for Quest; HDF5 front RGB-D remains 640x480.
+    # Center-crop the 1280x720 front stream to 640x480 for recording.
     record_size: [640, 480]
 
 arms:

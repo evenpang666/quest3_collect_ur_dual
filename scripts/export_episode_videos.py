@@ -6,6 +6,7 @@ The recorder names cameras ``front``, ``side``, ``left_wrist`` and
 downstream review: front_cam.mp4, side_cam.mp4, wrist_left_cam.mp4 and
 wrist_right_cam.mp4.  Missing camera datasets become all-black videos with
 the same number of frames as the episode.
+The default H.264 (avc1) encoding supports VS Code's built-in video preview.
 """
 from __future__ import annotations
 
@@ -16,6 +17,9 @@ from pathlib import Path
 import cv2
 import h5py
 import numpy as np
+
+
+DEFAULT_CODEC = "avc1"
 
 
 CAMERAS = (
@@ -114,7 +118,10 @@ def export(episode: Path, output_dir: Path, fps_override: float | None, codec: s
         if not all(writer.isOpened() for writer in writers):
             for writer in writers:
                 writer.release()
-            raise RuntimeError(f"cannot open MP4 writer with codec {codec!r}")
+            raise RuntimeError(
+                f"cannot open MP4 writer with codec {codec!r}; H.264 export requires an encoder-enabled "
+                "OpenCV build (on Ubuntu use /usr/bin/python3 with python3-opencv)"
+            )
         try:
             for index in range(frames):
                 for spec, writer in zip(specs, writers):
@@ -140,8 +147,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("episode", type=Path, help="episode_XXXXX.hdf5")
     parser.add_argument("--output-dir", type=Path, help="default: <episode_stem>_videos beside episode")
-    parser.add_argument("--fps", type=float, help="override timestamp-derived FPS")
-    parser.add_argument("--codec", default="mp4v", help="fourcc codec, default: mp4v")
+    parser.add_argument("--fps", type=float, help="video FPS; default: 30")
+    parser.add_argument("--codec", default=DEFAULT_CODEC, help="fourcc codec; default: avc1 (H.264, VS Code compatible)")
     parser.add_argument("--overwrite", action="store_true", help="replace existing MP4 files")
     args = parser.parse_args()
     output = args.output_dir or args.episode.with_name(f"{args.episode.stem}_videos")

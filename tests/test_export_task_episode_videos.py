@@ -1,3 +1,4 @@
+import cv2
 import h5py
 import numpy as np
 import pytest
@@ -33,3 +34,22 @@ def test_export_task_continues_after_bad_episode_and_skips_completed_one(tmp_pat
 def test_export_task_requires_hdf5_files(tmp_path):
     with pytest.raises(FileNotFoundError, match="no .hdf5 files"):
         export_task(tmp_path)
+
+
+def test_export_task_replaces_complete_legacy_mp4v_videos_with_h264(tmp_path):
+    episode = tmp_path / "episode_00000.hdf5"
+    with h5py.File(episode, "w") as file:
+        file.create_dataset("timestamps_ns", data=[0, 33_333_333])
+        file.create_dataset("observations/images/front/rgb", data=np.full((2, 16, 16, 3), 90, np.uint8))
+
+    assert export_task(tmp_path, codec="mp4v") == (1, 0, 0)
+    # Correct frame counts alone must not cause incompatible videos to be skipped.
+    assert export_task(tmp_path) == (1, 0, 0)
+    for path in (tmp_path / "episode_00000_videos").glob("*.mp4"):
+        capture = cv2.VideoCapture(str(path))
+        try:
+            assert int(capture.get(cv2.CAP_PROP_FOURCC)) == cv2.VideoWriter_fourcc(*"avc1")
+            assert int(capture.get(cv2.CAP_PROP_FRAME_COUNT)) == 2
+        finally:
+            capture.release()
+    assert export_task(tmp_path) == (0, 1, 0)
