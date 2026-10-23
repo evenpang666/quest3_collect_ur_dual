@@ -301,6 +301,34 @@ def test_resume_camera_observation_without_selected_points(tmp_path, monkeypatch
                                   defer_touch_selection=True) == observation
 
 
+def test_resume_rejects_observation_from_old_board_model(tmp_path):
+    args = SimpleNamespace(output=tmp_path / "front.yaml", recapture_camera=False, touch_corner_ids=None)
+    old_signature = {"camera_serial": "front", "squares_x": 11, "squares_y": 8}
+    args.output.with_name("front_camera_observation.yaml").write_text(
+        yaml.safe_dump({"signature": old_signature}))
+    signature = {**old_signature, "pattern": "legacy", "model_version": 2}
+    with pytest.raises(SystemExit, match="--recapture-camera"):
+        charuco.observe_camera(args, None, None, None, signature, defer_touch_selection=True)
+
+
+@pytest.mark.parametrize("change", ["old_model", "pattern"])
+def test_existing_result_cannot_skip_calibration_after_board_model_change(tmp_path, monkeypatch, change):
+    path, config = make_config(tmp_path)
+    rig = SyntheticRig(monkeypatch)
+    dual.main(["--config", str(path), "--arm", "left", *BOARD_ARGS])
+    output = tmp_path / config["arms"]["left_arm"]["front_calibration"]
+    result = yaml.safe_load(output.read_text())
+    if change == "old_model":
+        result["board"].pop("model_version")
+    else:
+        result["board"]["pattern"] = "opencv"
+    output.write_text(yaml.safe_dump(result))
+    rig.events.clear()
+    with pytest.raises(SystemExit, match="different board/model"):
+        dual.main(["--config", str(path), "--arm", "left", *BOARD_ARGS])
+    assert rig.events == []
+
+
 def test_cross_arm_disagreement_retains_independent_results_but_blocks_summary(tmp_path, monkeypatch):
     path, config = make_config(tmp_path)
     rig = SyntheticRig(monkeypatch)

@@ -17,6 +17,7 @@ import numpy as np
 import yaml
 
 from .calibrate_camera import average_transforms, rotation_error_deg
+from .charuco_board import BOARD_MODEL_VERSION, create_board, estimate_pose, interpolate_corners
 from .transforms import dump_transform
 
 
@@ -47,34 +48,6 @@ def rigid_transform(source: np.ndarray, target: np.ndarray) -> tuple[np.ndarray,
 def _board_corners(board: object) -> np.ndarray:
     values = board.chessboardCorners if hasattr(board, "chessboardCorners") else board.getChessboardCorners()
     return np.asarray(values, dtype=float).reshape(-1, 3)
-
-
-def filter_inconsistent_markers(marker_corners, marker_ids, board):
-    """Discard marker IDs whose physical positions disagree with this board.
-
-    Some printed ChArUco boards use the opposite alternating marker layout
-    from the installed OpenCV version. Those markers can be decoded correctly
-    while having the wrong board coordinates, corrupting corner interpolation.
-    """
-    if marker_ids is None or len(marker_ids) < 6 or len(marker_corners) != len(marker_ids):
-        return marker_corners, marker_ids
-    board_centers = {
-        int(marker_id): np.asarray(points, dtype=np.float32).reshape(4, 3)[:, :2].mean(axis=0)
-        for marker_id, points in zip(np.asarray(board.ids).reshape(-1), board.objPoints)
-    }
-    indices = [index for index, marker_id in enumerate(marker_ids.reshape(-1))
-               if int(marker_id) in board_centers]
-    if len(indices) < 6:
-        raise SystemExit("fewer than six known ChArUco markers; check board parameters and visibility")
-    expected = np.asarray([board_centers[int(marker_ids[index, 0])] for index in indices], dtype=np.float32)
-    observed = np.asarray([np.asarray(marker_corners[index]).reshape(4, 2).mean(axis=0)
-                           for index in indices], dtype=np.float32)
-    _, inliers = cv2.findHomography(expected, observed, cv2.RANSAC, 8.0)
-    if inliers is None or int(inliers.sum()) < max(6, int(np.ceil(0.6 * len(indices)))):
-        raise SystemExit("ChArUco marker geometry does not match the configured board")
-    keep = np.zeros(len(marker_ids), dtype=bool)
-    keep[np.asarray(indices)[inliers.reshape(-1).astype(bool)]] = True
-    return [corners for corners, selected in zip(marker_corners, keep) if selected], marker_ids[keep]
 
 
 def select_spread_corners(detected_ids: list[int], board_points: np.ndarray) -> list[int]:
@@ -108,6 +81,20 @@ def corner_grid_position(corner_id: int, squares_x: int) -> tuple[int, int]:
 def touch_point_label(corner_id: int, squares_x: int) -> str:
     row, column = corner_grid_position(corner_id, squares_x)
     return f"板坐标原点起第 {row} 行、第 {column} 列内角（corner ID {corner_id}）"
+
+
+def image_point_label(corner_id: int, squares_x: int) -> str:
+    row, column = corner_grid_position(corner_id, squares_x)
+    return f"ID{corner_id} R{row}C{column}"
+
+
+def board_signature(args) -> dict:
+    return {
+        "squares_x": args.squares_x, "squares_y": args.squares_y,
+        "square_size_m": args.square_size_m, "marker_size_m": args.marker_size_m,
+        "dictionary": args.dictionary, "pattern": args.board_pattern,
+        "model_version": BOARD_MODEL_VERSION,
+    }
 
 
 def describe_touch_points(
@@ -185,6 +172,8 @@ def add_board_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--square-size-m", type=float, required=True)
     parser.add_argument("--marker-size-m", type=float, required=True)
     parser.add_argument("--dictionary", choices=sorted(DICTIONARIES), required=True)
+    parser.add_argument("--board-pattern", choices=("legacy", "opencv"), default="legacy",
+                        help="printed layout; legacy (default) matches the on-site even-row board")
     parser.add_argument(
         "--touch-corner-ids", type=int, nargs="+",
         help="optional override; otherwise selected from corners detected in the locked frame",
@@ -205,7 +194,7 @@ def observe_camera(args, board, board_points, dictionary, signature, *, defer_to
     if observation_path.exists() and not args.recapture_camera:
         observation = yaml.safe_load(observation_path.read_text(encoding="utf-8"))
         if observation.get("signature") != signature:
-            raise SystemExit(f"saved camera observation does not match current board/camera: {observation_path}")
+            raise SystemExit(f"saved camera observation does not match current board/camera/model; rerun with --recapture-camera (dual: start without --resume): {observation_path}")
         if touch_ids is None and not defer_touch_selection:
             if not observation.get("touch_corner_ids"):
                 raise SystemExit("saved observation has no auto-selected touch points; rerun with --recapture-camera")
@@ -240,18 +229,17 @@ def observe_camera(args, board, board_points, dictionary, signature, *, defer_to
                     continue
                 image = np.asanyarray(frame.get_data())
                 marker_corners, marker_ids, _ = cv2.aruco.detectMarkers(image, dictionary, parameters=parameters)
-                marker_corners, marker_ids = filter_inconsistent_markers(marker_corners, marker_ids, board)
                 charuco_count, pose = 0, None
                 if marker_ids is not None:
-                    count, charuco_corners, charuco_ids = cv2.aruco.interpolateCornersCharuco(
+                    count, charuco_corners, charuco_ids = interpolate_corners(
                         marker_corners, marker_ids, image, board,
-                        cameraMatrix=camera_matrix, distCoeffs=distortion,
+                        camera_matrix, distortion,
                     )
                     charuco_count = int(count or 0)
                     if charuco_count >= 6:
                         cv2.aruco.drawDetectedCornersCharuco(image, charuco_corners, charuco_ids)
-                        ok, rvec, tvec = cv2.aruco.estimatePoseCharucoBoard(
-                            charuco_corners, charuco_ids, board, camera_matrix, distortion, None, None
+                        ok, rvec, tvec = estimate_pose(
+                            charuco_corners, charuco_ids, board, camera_matrix, distortion
                         )
                         if ok:
                             pose = np.eye(4)
@@ -269,7 +257,7 @@ def observe_camera(args, board, board_points, dictionary, signature, *, defer_to
                             continue
                         u, v = np.rint(pixel_by_id[corner_id]).astype(int)
                         cv2.circle(image, (u, v), 14, (0, 0, 255), 3)
-                        cv2.putText(image, f"P{corner_id}", (u + 10, v - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+                        cv2.putText(image, image_point_label(corner_id, args.squares_x), (u + 10, v - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
                 cv2.putText(
                     image,
                     f"corners={charuco_count} auto={len(camera_to_board_samples)}/{args.camera_samples}",
@@ -293,12 +281,12 @@ def observe_camera(args, board, board_points, dictionary, signature, *, defer_to
                     for item in point_descriptions:
                         u, v = int(round(item["image_u_px"])), int(round(item["image_v_px"]))
                         cv2.circle(locked_image, (u, v), 16, (0, 0, 255), 4)
-                        cv2.putText(locked_image, f"P{item['id']}", (u + 10, v - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 255), 3)
+                        cv2.putText(locked_image, image_point_label(item['id'], args.squares_x), (u + 10, v - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
                     capturing = True
                     print("已锁定标定板；本臂完成前请保持板和两台相机固定。")
                     for item in point_descriptions:
                         print(
-                            f"  P{item['id']}: 图像{item['image_position']}，"
+                            f"  ID{item['id']}: 图像{item['image_position']}，"
                             f"像素(u={item['image_u_px']}, v={item['image_v_px']})，"
                             f"板坐标原点起第{item['board_row_from_origin']}行"
                             f"第{item['board_column_from_origin']}列"
@@ -364,7 +352,7 @@ def touch_board(args, board_points, touch_ids, detected_touch_candidates, signat
     for corner_id in args.retouch_corner_ids:
         touched_by_id.pop(corner_id, None)
     print("确认示教器已激活刚标定的 TCP。依次将 TCP 尖端精确触碰指定 ChArUco 内角点。")
-    print(f"行列从 1 开始，仅数棋盘格内部交点；本板每行 {args.squares_x - 1} 个内角。位置可对照已保存的 P<角点ID> 标注图。")
+    print(f"ID 从 0 开始，行列从 1 开始，仅数棋盘格内部交点；本板每行 {args.squares_x - 1} 个内角。对照标注图：ID 为角点编号，R 为行，C 为列。")
     receiver = RTDEReceiveInterface(args.robot_ip)
     try:
         for index in range(len(touch_ids)):
@@ -457,17 +445,16 @@ def verify_board(args, board, dictionary, camera_to_board):
                 continue
             image = np.asanyarray(frame.get_data())
             marker_corners, marker_ids, _ = cv2.aruco.detectMarkers(image, dictionary, parameters=parameters)
-            marker_corners, marker_ids = filter_inconsistent_markers(marker_corners, marker_ids, board)
             if marker_ids is None:
                 continue
-            count, charuco_corners, charuco_ids = cv2.aruco.interpolateCornersCharuco(
+            count, charuco_corners, charuco_ids = interpolate_corners(
                 marker_corners, marker_ids, image, board,
-                cameraMatrix=verify_matrix, distCoeffs=verify_distortion,
+                verify_matrix, verify_distortion,
             )
             if int(count or 0) < 6:
                 continue
-            ok, rvec, tvec = cv2.aruco.estimatePoseCharucoBoard(
-                charuco_corners, charuco_ids, board, verify_matrix, verify_distortion, None, None
+            ok, rvec, tvec = estimate_pose(
+                charuco_corners, charuco_ids, board, verify_matrix, verify_distortion
             )
             if ok:
                 pose = np.eye(4)
@@ -496,11 +483,7 @@ def calibration_result(args, base_to_camera, touch_ids, touch_rms, observation,
         "created_utc": datetime.now(timezone.utc).isoformat(),
         "method": "table-fixed ChArUco observed by camera and touched by calibrated TCP",
         "camera_serial": args.camera_serial,
-        "board": {
-            "squares_x": args.squares_x, "squares_y": args.squares_y,
-            "square_size_m": args.square_size_m, "marker_size_m": args.marker_size_m,
-            "dictionary": args.dictionary,
-        },
+        "board": board_signature(args),
         "touch_corner_ids": touch_ids,
         "touch_rms_mm": touch_rms * 1000,
         "quality_limits": {
@@ -551,9 +534,9 @@ def calibrate_arm(args) -> None:
     if any(not np.isfinite(value) or value <= 0 for value in limits):
         raise SystemExit("quality limits must be finite and positive")
     dictionary = cv2.aruco.getPredefinedDictionary(DICTIONARIES[args.dictionary])
-    board = cv2.aruco.CharucoBoard_create(
-        args.squares_x, args.squares_y, args.square_size_m, args.marker_size_m, dictionary
-    )
+    board = create_board(args.squares_x, args.squares_y, args.square_size_m,
+                         args.marker_size_m, args.board_pattern)
+    print(f"ChArUco layout={args.board_pattern}; ID0=第1行第1列内角，行列从板左上角起算。")
     board_points = _board_corners(board)
     if args.touch_corner_ids:
         ids = args.touch_corner_ids
@@ -563,12 +546,7 @@ def calibrate_arm(args) -> None:
             raise SystemExit("touch corners must not be collinear")
     observations = []
     for camera in cameras:
-        signature = {
-            "camera_serial": camera.camera_serial,
-            "squares_x": args.squares_x, "squares_y": args.squares_y,
-            "square_size_m": args.square_size_m, "marker_size_m": args.marker_size_m,
-            "dictionary": args.dictionary,
-        }
+        signature = {"camera_serial": camera.camera_serial, **board_signature(args)}
         observations.append(observe_camera(
             camera, board, board_points, dictionary, signature,
             defer_touch_selection=len(cameras) > 1,
@@ -594,7 +572,7 @@ def calibrate_arm(args) -> None:
                         if pixels else observation.get("touch_point_descriptions", []))
         print(f"{camera.camera_frame} ({camera.camera_serial}) 本臂共同触点：")
         for item in descriptions:
-            print(f"  P{item['id']}: 图像{item['image_position']}，"
+            print(f"  ID{item['id']}: 图像{item['image_position']}，"
                   f"像素(u={item['image_u_px']}, v={item['image_v_px']})，"
                   f"板坐标原点起第{item['board_row_from_origin']}行第{item['board_column_from_origin']}列")
         if len(cameras) > 1:
@@ -608,8 +586,8 @@ def calibrate_arm(args) -> None:
                 for item in descriptions:
                     u, v = int(round(item["image_u_px"])), int(round(item["image_v_px"]))
                     cv2.circle(image, (u, v), 16, (0, 0, 255), 4)
-                    cv2.putText(image, f"P{item['id']}", (u + 10, v - 10),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 255), 3)
+                    cv2.putText(image, image_point_label(item['id'], args.squares_x), (u + 10, v - 10),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
                 cv2.imwrite(str(image_path), image)
                 print(f"共同触点标注图已保存: {image_path}")
     touch_signature = {

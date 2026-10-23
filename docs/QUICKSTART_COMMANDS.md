@@ -60,6 +60,7 @@ ros2 run quest3_robot_data calibrate_dual_camera_charuco \
   --squares-x 11 --squares-y 8 \
   --square-size-m 0.070 --marker-size-m 0.052 \
   --dictionary DICT_5X5_100 \
+  --board-pattern legacy \
   --camera-samples 30 --max-touch-rms-mm 2.5
 ```
 

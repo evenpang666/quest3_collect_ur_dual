@@ -11,7 +11,7 @@ import numpy as np
 import yaml
 
 from .calibrate_camera import average_transforms, rotation_error_deg
-from .calibrate_camera_charuco import add_board_arguments, calibrate_arm
+from .calibrate_camera_charuco import add_board_arguments, board_signature, calibrate_arm
 from .preflight import resolve
 from .transforms import dump_transform, load_transform
 
@@ -64,6 +64,10 @@ def pair_complete(run) -> bool:
                 or result.get("parent_frame") != run.base_frame
                 or result.get("child_frame") != frame):
             raise SystemExit(f"existing calibrated result does not match the hardware config: {path}")
+        if result.get("board") != board_signature(run):
+            raise SystemExit(f"existing calibrated result uses a different board/model: {path}; "
+                             "back up and move this arm's two final YAML files, then recalibrate "
+                             "without --resume")
     return True
 
 

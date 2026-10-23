@@ -137,14 +137,14 @@ def test_usb2_observation_and_final_check_use_actual_intrinsics(tmp_path, monkey
     corners = np.array([[30 + i * 30, 100] for i in range(6)], dtype=np.float32).reshape(-1, 1, 2)
     monkeypatch.setattr(cv2.aruco, "detectMarkers", lambda *args, **kwargs: ([], ids, []))
 
-    def interpolate(*args, cameraMatrix, distCoeffs):
-        assert np.allclose(cameraMatrix, [[600, 0, 640], [0, 610, 360], [0, 0, 1]])
-        assert len(distCoeffs) == 5
+    def interpolate(marker_corners, marker_ids, image, board, camera_matrix, distortion):
+        assert np.allclose(camera_matrix, [[600, 0, 640], [0, 610, 360], [0, 0, 1]])
+        assert len(distortion) == 5
         return 6, corners, ids
 
-    monkeypatch.setattr(cv2.aruco, "interpolateCornersCharuco", interpolate)
+    monkeypatch.setattr(charuco, "interpolate_corners", interpolate)
     monkeypatch.setattr(cv2.aruco, "drawDetectedCornersCharuco", lambda *args: None)
-    monkeypatch.setattr(cv2.aruco, "estimatePoseCharucoBoard",
+    monkeypatch.setattr(charuco, "estimate_pose",
                         lambda *args: (True, np.zeros(3), np.array([0, 0, .5])))
     monkeypatch.setattr(cv2, "imshow", lambda *args: None)
     keys = iter([32, -1])
@@ -165,18 +165,3 @@ def test_usb2_observation_and_final_check_use_actual_intrinsics(tmp_path, monkey
     motion = charuco.verify_board(args, board, dictionary, np.asarray(observation["camera_to_board"]))
     assert np.allclose(motion, [0, 0])
     assert attempts == stopped == [(1280, 720, 15), (1280, 720, 15)]
-
-
-def test_inconsistent_printed_board_markers_are_filtered():
-    dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_5X5_100)
-    board = cv2.aruco.CharucoBoard_create(11, 8, .07, .052, dictionary)
-    ids = np.asarray(board.ids[:30], dtype=np.int32).reshape(-1, 1)
-    corners = []
-    for marker_id, points in zip(ids.reshape(-1), board.objPoints[:30]):
-        pixels = np.asarray(points, dtype=np.float32)[:, :2] * [400, 300] + [250, 100]
-        if marker_id in (5, 16, 27):
-            pixels += [200, 0]
-        corners.append(pixels.astype(np.float32).reshape(1, 4, 2))
-    filtered_corners, filtered_ids = charuco.filter_inconsistent_markers(corners, ids, board)
-    assert len(filtered_corners) == 27
-    assert set(ids.reshape(-1)) - set(filtered_ids.reshape(-1)) == {5, 16, 27}
