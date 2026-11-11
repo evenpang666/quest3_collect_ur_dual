@@ -27,6 +27,8 @@ def test_servo_loop_streams_full_dual_target_and_preserves_motion_gates(
     path = Path(__file__).resolve().parents[1] / "config/hardware_dual_teleop.yaml"
     config = yaml.safe_load(path.read_text())
     common = dict(config["rtde"], control_hz=config["control_hz"])
+    # Exercise backward compatibility for configurations without joint limits.
+    common.pop("max_joint_speed_rad_s")
     if legacy_limits:
         # Configurations without the new switch retain their old limit.
         common.pop("limit_cartesian_targets")

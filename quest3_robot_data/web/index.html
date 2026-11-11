@@ -9,7 +9,7 @@ button{font-size:1rem;padding:.75rem 1rem;margin:.3rem}.danger{background:#9d263
 </style>
 <main>
   <h1>Quest 3 → UR7e 双臂遥操作</h1>
-  <p class="hint">页面版本：passthrough-v6（离头操作 + 录制提示音）</p>
+  <p class="hint">页面版本：passthrough-v7（实体手柄识别 + 录制提示音）</p>
   <p class="hint">左手柄→左臂，右手柄→右臂。按住侧握把才移动对应机械臂；扳机独立控制对应夹爪。专用模式下右手 A 键切换避障，切换后松开侧握把再按住。左右摇杆按下分别重新锚定；常规模式仍可用 Y/B 切换录制。</p>
   <button id="connect">连接</button><button id="enter" disabled>进入现实透视</button>
   <button id="record" class="danger" disabled>开始录制</button>
@@ -20,7 +20,7 @@ button{font-size:1rem;padding:.75rem 1rem;margin:.3rem}.danger{background:#9d263
 (()=>{
 const $=id=>document.getElementById(id), status=$('status'), connect=$('connect'), enter=$('enter'), record=$('record');
 let ws,session,space,gl,layer,renderer,lastSent=0,recording=false,recordingAvailable=false,recordingStartMs=null,recordingInterrupted='',keepaliveTimer=null;
-let controllerReady=false;
+let controllerReady=false,trackingHint='尚未进入现实透视';
 let audioContext=null,lastConfirmedRecording=null,lastConfirmedInterruption='';
 let recenterLeft=false,recenterRight=false,lastRecordLeft=false,lastRecordRight=false;
 let avoidanceAvailable=false,avoidanceEnabled=false,lastAvoidanceA=false,pendingAvoidanceToggle=false;
@@ -48,10 +48,28 @@ function recordingElapsed(){return recording&&recordingStartMs!==null?(performan
 function formatDuration(seconds){const total=Math.max(0,Math.floor(seconds));return `${String(Math.floor(total/60)).padStart(2,'0')}:${String(total%60).padStart(2,'0')}`}
 function applyRecordingState(value,elapsed,interrupted){const next=!!value;if(interrupted===null)recordingInterrupted='';else if(typeof interrupted==='string'&&interrupted)recordingInterrupted=interrupted;if(next){recordingInterrupted='';const seconds=Number(elapsed);if(Number.isFinite(seconds))recordingStartMs=performance.now()-Math.max(0,seconds)*1000;else if(!recording)recordingStartMs=performance.now()}else recordingStartMs=null;recording=next;record.textContent=next?'停止并保存':'开始录制'}
 function button(src,i){return src?.gamepad?.buttons?.[i]?.value||0}
+function isHandInput(src){
+ // Fixed-hand inputs emulate a gamepad even when XRInputSource.hand is absent.
+ return !!src?.hand||(src?.profiles||[]).some(p=>/(^|-)hands?($|-)/i.test(p));
+}
+function isPhysicalController(src){
+ return !!src&&src.targetRayMode==='tracked-pointer'&&!!src.gripSpace&&!!src.gamepad&&!isHandInput(src);
+}
 function controller(src,frame){
-  if(!src?.gripSpace)return null; const pose=frame.getPose(src.gripSpace,space); if(!pose)return null;
+  if(!isPhysicalController(src))return null; const pose=frame.getPose(src.gripSpace,space); if(!pose)return null;
   const p=pose.transform.position,q=pose.transform.orientation;
   return {position:[p.x,p.y,p.z],orientation:[q.x,q.y,q.z,q.w],trigger:button(src,0),squeeze:button(src,1),thumbstick:button(src,3),primary:button(src,4),secondary:button(src,5)};
+}
+function trackedController(sources,role,frame){
+ for(const src of sources){if(src.handedness===role){const value=controller(src,frame);if(value)return value}}
+ return null;
+}
+function controllerHint(sources,left,right,visibility){
+ if(visibility!=='visible')return '现实透视未获得输入焦点，请关闭系统菜单并回到会话';
+ if(left&&right)return '左右实体手柄均已追踪';
+ if(sources.some(isHandInput))return '检测到裸手输入，请关闭手部追踪并切回实体手柄';
+ const missing=[!left?'左':null,!right?'右':null].filter(Boolean).join('、');
+ return `等待${missing}实体手柄追踪；请唤醒手柄并保持在头显视野内`;
 }
 function send(value){if(ws?.readyState===WebSocket.OPEN)ws.send(JSON.stringify(value))}
 function setRecording(value){if(!recordingAvailable)return;if(value&&!controllerReady){set('左右手柄必须同时连接并被追踪，才能开始录制。');playCue('error');return}send({type:'record',recording:value})}
@@ -85,7 +103,7 @@ function connectWs(){
    }
    const interrupt=recordingInterrupted?`\n⚠ 录制中断: ${recordingInterrupted}`:'';
    const missing=Array.isArray(d.controller_missing)?d.controller_missing.join('、'):'';
-   set(`VR连接: 是\n手柄就绪: ${d.controller_ready?'是':`否${missing?`（缺少 ${missing}）`:''}`}\n录制: ${recordingAvailable?(recording?'进行中':'未录制'):'当前模式已关闭'} ${recording?formatDuration(recordingElapsed()):''}${interrupt}\n避障: ${avoidanceAvailable?(avoidanceEnabled?'开启':'关闭'):'当前模式不可用'} / ${d.avoidance_status??'等待'}\n同步帧: ${d.synced_frames??'-'}\n丢帧: ${d.dropped_frames??'-'}\n左臂: ${d.left_arm??'等待'} / ${d.left_arm_rtde??'RTDE等待'}\n左夹爪: ${d.left_arm_gripper??'等待'}\n右臂: ${d.right_arm??'等待'} / ${d.right_arm_rtde??'RTDE等待'}\n右夹爪: ${d.right_arm_gripper??'未连接'}\n双臂距离保护: ${d.dual_tcp_guard??'-'}`);
+   set(`VR连接: 是\n手柄就绪: ${d.controller_ready?'是':`否${missing?`（缺少 ${missing}）`:''}`}\n输入: ${trackingHint}\n录制: ${recordingAvailable?(recording?'进行中':'未录制'):'当前模式已关闭'} ${recording?formatDuration(recordingElapsed()):''}${interrupt}\n避障: ${avoidanceAvailable?(avoidanceEnabled?'开启':'关闭'):'当前模式不可用'} / ${d.avoidance_status??'等待'}\n同步帧: ${d.synced_frames??'-'}\n丢帧: ${d.dropped_frames??'-'}\n左臂: ${d.left_arm??'等待'} / ${d.left_arm_rtde??'RTDE等待'}\n左夹爪: ${d.left_arm_gripper??'等待'}\n右臂: ${d.right_arm??'等待'} / ${d.right_arm_rtde??'RTDE等待'}\n右夹爪: ${d.right_arm_gripper??'未连接'}\n双臂距离保护: ${d.dual_tcp_guard??'-'}`);
   };
 }
 function shader(type,source){const s=gl.createShader(type);gl.shaderSource(s,source);gl.compileShader(s);if(!gl.getShaderParameter(s,gl.COMPILE_STATUS))throw Error(gl.getShaderInfoLog(s));return s}
@@ -112,7 +130,7 @@ function makeRenderer(){
 function mul(a,b){const o=new Float32Array(16);for(let c=0;c<4;c++)for(let r=0;r<4;r++)o[c*4+r]=a[r]*b[c*4]+a[4+r]*b[c*4+1]+a[8+r]*b[c*4+2]+a[12+r]*b[c*4+3];return o}
 function updateRecordingHud(){
  const label=!recordingAvailable?'录制已关闭':(recordingInterrupted?'⚠ 录制已中断':(recording?`● 正在录制 ${formatDuration(recordingElapsed())}`:'未录制'));
- const baseHint=!recordingAvailable?'当前模式不录制':(recordingInterrupted||(!controllerReady?'等待左右手柄连接并追踪':'按左手 Y / 右手 B '+(recording?'停止并保存':'开始录制')));
+ const baseHint=!recordingAvailable?'当前模式不录制':(recordingInterrupted||(!controllerReady?trackingHint:'按左手 Y / 右手 B '+(recording?'停止并保存':'开始录制')));
  const hint=performance.now()<avoidanceNoticeUntil?avoidanceNotice:baseHint+(avoidanceAvailable?`；右手 A 避障${avoidanceEnabled?'已开':'已关'}`:'');
  const key=label+'\n'+hint;if(renderer.labelKey===key)return;renderer.labelKey=key;
  const canvas=renderer.canvas,ctx=canvas.getContext('2d');
@@ -146,7 +164,9 @@ function render(frame){
 }
 function onFrame(now,frame){
  session.requestAnimationFrame(onFrame);render(frame);
- const sources=[...session.inputSources],l=controller(sources.find(s=>s.handedness==='left'),frame),r=controller(sources.find(s=>s.handedness==='right'),frame);
+ const sources=[...session.inputSources],visible=session.visibilityState==='visible';
+ const l=visible?trackedController(sources,'left',frame):null,r=visible?trackedController(sources,'right',frame):null;
+ trackingHint=controllerHint(sources,l,r,session.visibilityState);
  controllerReady=!!l&&!!r;record.disabled=!recordingAvailable||(!controllerReady&&!recording);
  if(l?.thumbstick>.5)recenterLeft=true;if(r?.thumbstick>.5)recenterRight=true;
  // Quest Touch's upper face buttons are Y (left) and B (right).  Toggle only
@@ -167,6 +187,7 @@ async function startVr(){
  try{
   session=await navigator.xr.requestSession('immersive-ar',{requiredFeatures:['local-floor']});
   session.addEventListener('end',()=>{
+   trackingHint='现实透视会话已退出，请重新进入';
    controllerReady=false;record.disabled=true;lastAvoidanceA=false;pendingAvoidanceToggle=false;send({type:'pose',left:null,right:null,avoidance_off:true});setRecording(false);session=null;
    enter.disabled=ws?.readyState!==WebSocket.OPEN;
    $('recenterLeft').disabled=true;$('recenterRight').disabled=true;

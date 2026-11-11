@@ -11,6 +11,7 @@ from quest3_robot_data.rtde_servo import ArmWorker
 def test_reconnect_requires_release_then_new_clutch_press():
     """A held clutch cannot revive a target created before an RTDE failure."""
     worker = ArmWorker.__new__(ArmWorker)
+    worker._command_epoch = 0
     worker._lock = threading.Lock()
     worker.enabled = True
     worker.target = np.eye(4)
@@ -33,6 +34,7 @@ def test_reconnect_requires_release_then_new_clutch_press():
 
 def test_joint_targets_are_accepted_only_in_dedicated_avoidance_mode():
     worker = ArmWorker.__new__(ArmWorker)
+    worker._command_epoch = 0
     worker._lock = threading.Lock()
     worker.target = np.eye(4)
     worker.joint_target = None
@@ -54,6 +56,7 @@ def test_joint_targets_are_accepted_only_in_dedicated_avoidance_mode():
 
 def test_avoidance_hold_clears_target_without_satisfying_rearm():
     worker = ArmWorker.__new__(ArmWorker)
+    worker._command_epoch = 0
     worker._lock = threading.Lock()
     worker.avoidance_available = True
     worker.avoidance_mode = True
@@ -75,6 +78,7 @@ def test_avoidance_hold_clears_target_without_satisfying_rearm():
 
 def test_avoidance_mode_rejects_late_joint_target_after_toggle_off():
     worker = ArmWorker.__new__(ArmWorker)
+    worker._command_epoch = 0
     worker._lock = threading.Lock()
     worker.avoidance_available = True
     worker.avoidance_mode = True

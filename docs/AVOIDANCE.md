@@ -28,7 +28,7 @@ real_scripts/start_dual_vr_teleop_no_cameras.sh --confirm MOVE_BOTH_ARMS
 - 优化失败、服务不可用或标定不一致时，本步不执行，避障保持开启；新输入会重试，只有手动按 A 才关闭。
 - `obstacle_avoidance.ignore_snapshot_age: true`：本模式继续使用超过 `2.0 s` 的 OBB 快照，**可能依据旧障碍位置运动**；其他 safety 程序仍保留过期检查。
 
-常规双臂脚本显式关闭此避障功能，使用普通 `servoL` 路径。两种脚本共用 RTDE 和 Quest 端口，不能同时运行。TCP 距离及软件避障不能替代实体急停和现场监护。
+常规双臂脚本显式关闭此避障功能，使用控制柜 IK + `servoJ` 路径，普通遥操的每关节软件指令限速为 `1 rad/s`；避障投影指令沿用自己的步长约束。两种脚本共用 RTDE 和 Quest 端口，不能同时运行。TCP 距离及软件避障不能替代实体急停和现场监护。
 
 ## 环境与退出
 
@@ -38,6 +38,6 @@ real_scripts/start_dual_vr_teleop_no_cameras.sh --confirm MOVE_BOTH_ARMS
 | safety 检测服务 | `127.0.0.1:8766` |
 | 避障计算进程 | `127.0.0.1:8768`；可设 `QUEST3_AVOIDANCE_PORT=8769` |
 
-故障原因与堆栈见启动终端的 `pose_mapper` / `teleop_avoidance_server` 日志。更新后退出旧 VR 会话并刷新头显页面（`passthrough-v6`）。
+故障原因与堆栈见启动终端的 `pose_mapper` / `teleop_avoidance_server` 日志。更新后退出旧 VR 会话并刷新头显页面（`passthrough-v7`）。
 
 `Ctrl-C` 结束遥操及其计算进程；独立检测服务由原终端管理。恢复相机采集前，停止专用脚本及 safety 对相机的占用。脚本的避障环境变量不写回调用终端。

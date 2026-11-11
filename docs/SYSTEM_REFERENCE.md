@@ -34,7 +34,8 @@ ros2 launch quest3_robot_data quest3_system.launch.py \
 
 - 左右手柄分别控制对应机械臂。侧握把为独立死手开关；松开停止并清除锚点，扳机独立控制夹爪。
 - 每次握住时记录手柄 `gripSpace` 和该臂 Tool/TCP 位姿；后续相对位姿按 X 同向、Y/Z 反向换算。手柄前方（-Z）对应 Tool +Z，实际方向取决于活动 TCP 姿态。
-- 普通双臂配置 `rtde.limit_cartesian_targets: false`，完整 1:1 目标直接发往 `servoL`，由 UR 内部完成 IK。实际运动受控制柜安全设置、伺服响应及延迟影响；`ur_rtde 1.6.5` 的 `servoL/servoJ` 不使用 `speed/acceleration` 参数。
+- 普通双臂及左臂遥操配置 `rtde.max_joint_speed_rad_s: 1.0`：手柄仍按 1:1 映射，由 UR 求临近关节解，再限制相邻 `servoJ` 指令的变化率，每关节不超过 `1 rad/s`（125 Hz 时每周期 `0.008 rad`）。开始、重新握持、模式切换和断线恢复时从实际关节位置起步。此为软件指令限速，实际运动仍受控制柜安全设置、伺服响应及延迟影响；需要物理安全速度保证时应在示教器设置相应限制。`ur_rtde 1.6.5` 的 `servoL/servoJ` 不使用 `speed/acceleration` 参数。
+- 普通双臂配置 `rtde.limit_cartesian_targets: false`，不额外限制 Cartesian 目标步长；未设置 `max_joint_speed_rad_s` 的其他配置保留 `servoL` 路径。控制柜 IK 查询为同步调用，新增查询对控制周期的影响需实机确认。
 - 其他配置默认保留 `max_target_jump_m/rad` 限幅；[专用避障](AVOIDANCE.md)另有步长约束。
 - 目标 / 手柄超过 `0.25 s` 未更新会停止；双臂缺任一手柄时均不能运动或开始录制。恢复后须松开再握住。
 - 双臂目标 TCP 在 front 坐标中距离小于 `0.20 m` 时同时停止。此保护不覆盖连杆或场景，不能证明无碰撞。

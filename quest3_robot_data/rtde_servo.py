@@ -1,4 +1,4 @@
-"""Dual UR RTDE servoL backend. Cartesian targets use each robot's internal IK."""
+"""Dual UR RTDE backend with optional joint-rate-limited Cartesian teleop."""
 from __future__ import annotations
 
 import argparse
@@ -21,7 +21,7 @@ from std_msgs.msg import Bool, Float32, Float64MultiArray, String
 
 from .pose_mapper import _load_calibration, _resolve
 from .robotiq_socket import Robotiq2FClient
-from .target_limiter import limit_cartesian_target
+from .target_limiter import limit_cartesian_target, limit_joint_target
 from .transforms import (
     matrix_to_quaternion,
     matrix_to_ur_pose,
@@ -99,6 +99,12 @@ class ArmWorker(threading.Thread):
         self.node, self.name, self.config, self.common = node, name, config, common
         self.avoidance_available = bool(common.get("avoidance_available", False))
         self.avoidance_mode = False
+        self._command_epoch = 0
+        self.joint_speed_limit = common.get("max_joint_speed_rad_s")
+        if self.joint_speed_limit is not None:
+            self.joint_speed_limit = float(self.joint_speed_limit)
+            if not np.isfinite(self.joint_speed_limit) or self.joint_speed_limit <= 0:
+                raise ValueError("rtde.max_joint_speed_rad_s must be finite and positive")
         self._lock = threading.Lock()
         self.target: np.ndarray | None = None
         self.joint_target: np.ndarray | None = None
@@ -192,6 +198,7 @@ class ArmWorker(threading.Thread):
             return
         with self._lock:
             self.avoidance_mode = bool(enabled)
+            self._command_epoch += 1
             self.target = None
             self.joint_target = None
             self.target_time = 0.0
@@ -201,6 +208,7 @@ class ArmWorker(threading.Thread):
         with self._lock:
             requested = bool(value)
             if not requested:
+                self._command_epoch += 1
                 self.target = None
                 self.joint_target = None
                 self.target_time = 0.0
@@ -223,6 +231,7 @@ class ArmWorker(threading.Thread):
     def _require_rearm(self) -> None:
         """Discard pre-stop commands and wait for release then clutch press."""
         with self._lock:
+            self._command_epoch += 1
             self.enabled = False
             self.target = None
             self.joint_target = None
@@ -307,6 +316,8 @@ class ArmWorker(threading.Thread):
                 attempt = 0
                 iteration = 0
                 active_mode = None
+                ordinary_joint_command = None
+                command_epoch = None
                 last_safety_check = 0.0
                 while not self.stopping.is_set():
                     period_start = control.initPeriod() if control else None
@@ -329,9 +340,16 @@ class ArmWorker(threading.Thread):
                             raise RuntimeError("UR protective stop is active")
                         self._clear_safety_event()
                     with self._lock:
-                        enabled, target, joint_target, avoidance_mode, age = (
+                        enabled, target, joint_target, avoidance_mode, age, epoch = (
                             self.enabled, self.target, self.joint_target, self.avoidance_mode,
-                            time.monotonic() - self.target_time)
+                            time.monotonic() - self.target_time, self._command_epoch)
+                        target_deadline = self.target_time + timeout
+                    if epoch != command_epoch:
+                        if active:
+                            control.servoStop()
+                            active = False
+                        ordinary_joint_command = None
+                        command_epoch = epoch
                     if avoidance_mode:
                         target = None
                     else:
@@ -342,6 +360,7 @@ class ArmWorker(threading.Thread):
                         if active and mode != active_mode:
                             control.servoStop()
                             active = False
+                            ordinary_joint_command = None
                         active_mode = mode
                         if joint_target is not None:
                             actual_q = np.asarray(receive.getActualQ(), dtype=float)
@@ -388,21 +407,45 @@ class ArmWorker(threading.Thread):
                             # a connection failure is essential: discard the
                             # stale target, tear down this interface and let
                             # the outer loop reconnect indefinitely.
-                            servo_ok = control.servoL(
-                                command.tolist(),
-                                float(self.common["speed"]),
-                                float(self.common["acceleration"]),
-                                dt,
-                                float(self.common["lookahead_time"]),
-                                float(self.common["gain"]),
-                            )
+                            if self.joint_speed_limit is None:
+                                servo_ok = control.servoL(
+                                    command.tolist(),
+                                    float(self.common["speed"]),
+                                    float(self.common["acceleration"]), dt,
+                                    float(self.common["lookahead_time"]),
+                                    float(self.common["gain"]),
+                                )
+                            else:
+                                reference = (np.asarray(receive.getActualQ(), dtype=float)
+                                             if ordinary_joint_command is None else ordinary_joint_command)
+                                solution = control.getInverseKinematics(command.tolist(), reference.tolist())
+                                bounded = limit_joint_target(reference, solution, self.joint_speed_limit, dt)
+                                # IK is a synchronous controller request. A
+                                # release, timeout or mode change while it was
+                                # pending must cancel this command.
+                                with self._lock:
+                                    valid = (self.enabled and not self.avoidance_mode
+                                             and self._command_epoch == epoch
+                                             and time.monotonic() <= target_deadline)
+                                    if valid:
+                                        servo_ok = control.servoJ(
+                                            bounded.tolist(), 0.0, 0.0, dt,
+                                            float(self.common["lookahead_time"]),
+                                            float(self.common["gain"]),
+                                        )
+                                        ordinary_joint_command = bounded
+                                    else:
+                                        servo_ok = None
                             if servo_ok is False:
                                 self._report_safety_event(
                                     "rtde_control_lost", "UR RTDE control script is not running"
                                 )
                                 raise RuntimeError("UR RTDE control script is not running")
-                            active = True
-                            self.status = "enabled"
+                            if valid:
+                                active = True
+                                self.status = "enabled"
+                    if not valid:
+                        ordinary_joint_command = None
                     if not valid and active:
                         control.servoStop()
                         active = False

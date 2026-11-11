@@ -110,7 +110,9 @@ real_scripts/start_dual_vr_teleop.sh --confirm MOVE_BOTH_ARMS --task "pick place
 bash real_scripts/quest_keep_awake.sh off
 ```
 
-头显使用现实透视与文字提示，不请求相机预览。front 源图 `1280×720@30`，录制中心裁剪缩放至 `640×480`；可选 front 深度同样处理。更新后退出旧会话、刷新页面，版本应为 `passthrough-v6`。
+头显使用现实透视与文字提示，不请求相机预览。front 源图 `1280×720@30`，录制中心裁剪缩放至 `640×480`；可选 front 深度同样处理。更新后退出旧会话、刷新页面，版本应为 `passthrough-v7`。
+
+仅实体手柄用于遥操；裸手追踪（包括 `meta-fixed-hand` 模拟的手柄输入）不会使手柄就绪。若提示“检测到裸手输入”，在 Quest 设置中关闭手部追踪与自动切换，拿起并唤醒两只实体手柄，再重新进入现实透视。页面和悬浮提示会区分裸手输入、追踪缺失和输入焦点丢失。
 
 ### 与 safety 同时运行：无相机双臂遥操
 

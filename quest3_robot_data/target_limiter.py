@@ -1,9 +1,31 @@
-"""Bound the Cartesian command that would be sent to UR servoL."""
+"""Bound Cartesian and joint commands sent to UR servo control."""
 from __future__ import annotations
 
 import numpy as np
 
 from .transforms import matrix_to_rotvec, rotvec_to_matrix
+
+
+def limit_joint_target(previous: np.ndarray, target: np.ndarray,
+                       max_speed: float, period: float) -> np.ndarray:
+    """Bound each joint's command rate, preserving the joint-space direction.
+
+    Use the previous command (measured joints for the first command), rather
+    than re-anchoring every cycle to feedback that may lag or run ahead.
+    Do not wrap angles: IK must select the nearby branch using qnear.
+    """
+    previous, target = np.asarray(previous, dtype=float), np.asarray(target, dtype=float)
+    if (previous.shape != (6,) or target.shape != (6,)
+            or not np.isfinite(previous).all() or not np.isfinite(target).all()):
+        raise ValueError("joint commands must contain six finite angles")
+    if not np.isfinite(max_speed) or max_speed <= 0 or not np.isfinite(period) or period <= 0:
+        raise ValueError("joint speed and control period must be finite and positive")
+    delta = target - previous
+    largest = float(np.max(np.abs(delta)))
+    bound = max_speed * period
+    if largest > bound:
+        delta = delta * (bound / largest)
+    return previous + delta
 
 
 def limit_cartesian_target(actual: np.ndarray, target: np.ndarray,

@@ -54,11 +54,13 @@ arms:
     gripper_close_threshold: 0.15
     # No software Cartesian workspace limit; use UR controller safety limits.
 
-# Stream the full 1:1 hand-mapped pose for both arms.
+# Map hands 1:1; rate-limit the resulting joint commands for both arms.
 rtde:
   enable_motion: true
-  # Disable host translation/rotation clipping for ordinary servoL teleop.
-  # UR controller safety settings govern the robot's actual motion.
+  # Ordinary teleop uses controller IK + servoJ, with at most 0.008 rad per
+  # joint command at 125 Hz. UR safety settings still bound actual motion.
+  max_joint_speed_rad_s: 1.0
+  # No additional host Cartesian translation/rotation clipping.
   limit_cartesian_targets: false
   # Required API placeholders: ur_rtde 1.6.5 servoL/servoJ ignore these two.
   speed: 0.0
@@ -66,7 +68,7 @@ rtde:
   lookahead_time: 0.06
   gain: 600
   # These bounds are used by the optional QP-CBF avoidance path only while
-  # limit_cartesian_targets=false; ordinary servoL sends the full target.
+  # limit_cartesian_targets=false; ordinary teleop limits joints instead.
   max_target_jump_m: 0.0048
   max_target_jump_rad: 0.024
   target_timeout_sec: 0.25
